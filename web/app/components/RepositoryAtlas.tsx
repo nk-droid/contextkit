@@ -336,11 +336,7 @@ function Atlas() {
 
       <aside className="atlas-sidebar">
         <div className="atlas-brand">
-          <div className="atlas-brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
+          <img className="atlas-brand-mark" src="/favicon.svg" alt="" width={31} height={31} />
           <div>
             <strong>ContextKit</strong>
             <span>Repository atlas</span>

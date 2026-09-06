@@ -209,8 +209,8 @@ export function layoutGraph(
           strokeWidth:
             selectedNodeId &&
             (edge.source === selectedNodeId || edge.target === selectedNodeId)
-              ? 2.6
-              : 1.35,
+              ? 1.45
+              : 0.9,
           strokeDasharray: edge.basis === "inferred" ? "5 5" : undefined,
           opacity:
             selectedNodeId &&

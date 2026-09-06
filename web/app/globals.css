@@ -22,14 +22,7 @@ button { color: inherit; }
 .atlas-brand { align-items: center; display: flex; gap: 11px; padding: 0 8px 25px; }
 .atlas-brand strong { display: block; font-size: 16px; letter-spacing: -.02em; }
 .atlas-brand > div:last-child > span { color: #90a9a5; display: block; font-size: 10px; letter-spacing: .12em; margin-top: 2px; text-transform: uppercase; }
-.atlas-brand-mark { height: 31px; position: relative; width: 31px; }
-.atlas-brand-mark span { background: var(--coral); border-radius: 50%; height: 8px; position: absolute; width: 8px; z-index: 2; }
-.atlas-brand-mark span:nth-child(1) { left: 2px; top: 3px; }
-.atlas-brand-mark span:nth-child(2) { right: 2px; top: 3px; }
-.atlas-brand-mark span:nth-child(3) { bottom: 2px; left: 12px; }
-.atlas-brand-mark::before, .atlas-brand-mark::after { background: #9bb5b0; content: ""; height: 1px; position: absolute; top: 11px; transform-origin: left; width: 17px; }
-.atlas-brand-mark::before { left: 7px; transform: rotate(57deg); }
-.atlas-brand-mark::after { right: 2px; transform: rotate(123deg); transform-origin: right; }
+.atlas-brand-mark { border-radius: 7px; display: block; height: 31px; width: 31px; }
 .section-label, .eyebrow { color: #8da7a2; display: block; font-size: 9px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
 
 .repo-library { border-bottom: 1px solid #315757; border-top: 1px solid #315757; max-height: 248px; overflow-y: auto; padding: 17px 0; }
