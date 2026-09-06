@@ -1,0 +1,1 @@
+CREATE INDEX `repositories_updated_at_idx` ON `repositories` (`updated_at`);
