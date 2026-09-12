@@ -20,14 +20,14 @@ graph LR
     agent --> candidate[Candidate repository graph]
     candidate --> validator[Schema and evidence validator]
     validator --> graphfile[Validated repository graph]
-    graphfile --> ui[React interface]
+    graphfile --> ui[React explorer via Vinext]
     ui --> renderer[React Flow and Dagre]
     ui --> api[Repository API]
-    api --> database[SQLite or Cloudflare D1]
+    api --> database[Cloudflare D1 / local SQLite]
     database --> api
 ```
 
-The Bash CLI handles source resolution, temporary cloning, agent invocation, output selection, and atomic file publishing. Codex or Claude Code inspects the target repository in read-only mode. The optional React application validates and stores imported graph documents before rendering them with React Flow and Dagre.
+The Bash CLI handles source resolution, temporary cloning, agent invocation, output selection, and file publishing. Codex or Claude Code inspects the target repository in read-only mode. Graphs are validated against the source repository before publication. The optional React explorer runs through Vinext, validates imported graph structure, stores documents through a Cloudflare D1 binding, and renders them with React Flow and Dagre.
 
 ## Quick Start
 
@@ -51,6 +51,8 @@ Generate a complete context pack:
 ```bash
 contextkit generate https://github.com/owner/repository --all --with-graph
 ```
+
+By default, output goes to `./context-packs/<repo-slug>/` relative to the directory where you run the command.
 
 Start the graph explorer:
 
@@ -92,6 +94,8 @@ contextkit generate /path/to/local/repository \
 
 Existing files are skipped by default. Add `--regenerate` to replace the selected outputs.
 
+`--max-turns` applies only to Claude Code; `--model` can select a model for either agent.
+
 ## Generated Context
 
 | Audience | Output | Focus |
@@ -108,7 +112,7 @@ A complete generation produces:
 
 ```text
 context-packs/
-  repository-name/
+  repo-slug/
     INDEX.md
     HUMAN_OVERVIEW.md
     ARCHITECTURE.md
@@ -120,13 +124,13 @@ context-packs/
     REPO_GRAPH.json
 ```
 
-Generate one audience instead of the complete pack with `--audience human`, `architecture`, `modules`, `reviewer`, `contributor`, `agent`, or `interviewer`.
+Without `--all`, ContextKit generates the human overview by default. Select another audience with `--audience human`, `architecture`, `modules`, `reviewer`, `contributor`, `agent`, or `interviewer`.
 
 ## Repository Graph
 
 `--with-graph` generates a portable `REPO_GRAPH.json` document conforming to the versioned contract in `schemas/repo-graph.schema.json`.
 
-The graph can contain architecture, runtime-flow, import, and deployment views. Nodes and edges distinguish directly observed behavior from inferred relationships. Every observed graph element must include at least one valid repository-relative evidence path.
+The generator requests an architecture view and adds runtime-flow, import, or deployment views when useful. Nodes and edges distinguish directly observed behavior from inferred relationships. Every observed graph element must include at least one valid repository-relative evidence path. Each view is limited to 300 nodes and 1,000 edges.
 
 Validate a graph without opening the UI:
 
@@ -142,22 +146,24 @@ The React explorer supports:
 - searchable nodes and paths
 - node-kind and edge-kind filters
 - inferred-relationship toggles
+- isolated-node filtering
 - evidence inspection
+- runtime-flow step controls
 - automatic horizontal and vertical layouts
 - JSON file and directory imports
 
-Imported graph documents and repository metadata are persisted in SQLite through a `DB` binding. Local development stores the database under `web/.wrangler/state/`; hosted deployments use Cloudflare D1. No repository is seeded.
+Imported graph documents and repository metadata are persisted through a Cloudflare D1 `DB` binding. Local development uses a SQLite-backed D1 database under `web/.wrangler/state/`; hosted deployments use Cloudflare D1. Imports with the same repository ID replace the stored graph document. No repository is seeded.
 
 ## Safety Model
 
 - ContextKit does not need to be installed inside the target repository.
-- Public GitHub repositories are cloned into a temporary workspace.
-- Local repositories are inspected in place without writing to them.
+- Public GitHub repositories are shallow-cloned into a temporary workspace.
+- Local repositories are inspected in place by read-only agent tools.
 - Agent tools are restricted to repository reading and searching.
-- Generated context is written outside the target repository by default.
+- Generated context goes under the invoking directory by default; run from outside the target repository or use `--output` to keep it external.
 - Graph output is written to a temporary file and validated before an atomic replacement.
-- Invalid regeneration preserves the previous valid graph.
-- Evidence paths must remain inside the repository and exist at validation time.
+- Invalid regeneration preserves the previous graph and saves rejected output as `.REPO_GRAPH.invalid-output.txt` in the output directory.
+- The CLI validator rejects evidence paths that escape the repository or do not exist there.
 
 Generated context is still a starting point for investigation, not a replacement for code review.
 
@@ -209,6 +215,7 @@ Repository-scale evaluation should additionally record the pinned commit, source
 - Markdown claims are not yet represented as individually machine-verifiable evidence records.
 - The MVP does not perform a separate static-analysis pass beyond agent inspection and graph validation.
 - Generated context can become stale after the source repository changes.
+- The web importer checks graph structure and safe path syntax, but cannot verify evidence-file existence without the source repository.
 - The web interface has no application-level authentication and should not be exposed publicly with private graph data.
 - Codex or Claude Code must be installed and authenticated separately.
 
