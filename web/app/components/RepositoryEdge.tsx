@@ -6,7 +6,23 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { useMemo } from "react";
 import type { ExplorerEdge } from "../graph/layout";
+
+const labelPositionRatio = 0.26;
+
+function pointOnPath(path: string, ratio: number) {
+  if (typeof document === "undefined") return null;
+  const element = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "path",
+  );
+  element.setAttribute("d", path);
+  const length = element.getTotalLength();
+  if (!length) return null;
+  const { x, y } = element.getPointAtLength(length * ratio);
+  return { x, y };
+}
 
 export function RepositoryEdge({
   id,
@@ -30,37 +46,23 @@ export function RepositoryEdge({
   };
   const [edgePath, centerX, centerY] = getBezierPath(pathArguments);
   const label = data?.label ?? "";
-  const horizontal = data?.layoutDirection !== "TB";
   const anchor = data?.labelAnchor ?? "center";
-  const distance = horizontal
-    ? Math.abs(targetX - sourceX)
-    : Math.abs(targetY - sourceY);
-  const endpointOffset = Math.min(150, Math.max(76, distance * 0.28));
-  const direction = horizontal
-    ? Math.sign(targetX - sourceX) || 1
-    : Math.sign(targetY - sourceY) || 1;
-  const labelX = horizontal
-    ? anchor === "source"
-      ? sourceX + endpointOffset * direction
-      : anchor === "target"
-        ? targetX - endpointOffset * direction
-        : centerX
-    : anchor === "source"
-      ? sourceX
-      : anchor === "target"
-        ? targetX
-        : centerX;
-  const labelY = horizontal
-    ? anchor === "source"
-      ? sourceY
-      : anchor === "target"
-        ? targetY
-        : centerY
-    : anchor === "source"
-      ? sourceY + endpointOffset * direction
-      : anchor === "target"
-        ? targetY - endpointOffset * direction
-        : centerY;
+  // Sample the drawn curve so endpoint-anchored labels sit on the edge rather than
+  // on a straight line between its handles.
+  const anchorPoint = useMemo(
+    () =>
+      anchor === "center"
+        ? null
+        : pointOnPath(
+            edgePath,
+            anchor === "source"
+              ? labelPositionRatio
+              : 1 - labelPositionRatio,
+          ),
+    [anchor, edgePath],
+  );
+  const labelX = anchorPoint?.x ?? centerX;
+  const labelY = anchorPoint?.y ?? centerY;
 
   return (
     <>
@@ -70,7 +72,7 @@ export function RepositoryEdge({
           <div
             className={`repository-edge-label ${
               data?.basis === "inferred" ? "is-inferred" : ""
-            }`}
+            } ${data?.isSelected ? "is-selected" : ""}`}
             style={{
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
             }}

@@ -29,11 +29,17 @@ export function RepositoryNode({ data, selected }: NodeProps<ExplorerNode>) {
         selected ? "is-selected" : ""
       } ${data.isSearchMatch ? "" : "is-dimmed"} ${
         data.isNeighbor ? "is-neighbor" : ""
-      }`}
+      } ${data.isInFocus ? "" : "is-recessed"}`}
     >
       <Handle type="target" position={targetPosition} className="node-handle" />
       <div className="node-heading">
-        <span className="node-kind-dot" aria-hidden="true" />
+        {data.viewKind === "runtime-flow" && data.sequenceNumber ? (
+          <span className="runtime-step" aria-label={`Step ${data.sequenceNumber}`}>
+            {String(data.sequenceNumber).padStart(2, "0")}
+          </span>
+        ) : (
+          <span className="node-kind-dot" aria-hidden="true" />
+        )}
         <span>{labels[data.kind] ?? data.kind}</span>
         {data.basis === "inferred" ? (
           <span className="inferred-mark">Inferred</span>

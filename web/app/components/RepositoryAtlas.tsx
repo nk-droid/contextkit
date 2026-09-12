@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
   Background,
@@ -17,9 +18,16 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
+import Image from "next/image";
 import { layoutGraph, type LayoutDirection } from "../graph/layout";
 import {
+  graphKindOrder,
+  graphKindPresentation,
+} from "../graph/presentation";
+import {
   parseRepoGraphFile,
+  type GraphEdgeData,
+  type GraphNodeData,
   type RepoGraphFile,
 } from "../graph/schema";
 import { RepositoryNode } from "./RepositoryNode";
@@ -39,6 +47,8 @@ type RepositorySummary = {
   updatedAt: string;
 };
 
+type InspectorTab = "overview" | "evidence" | "relationships";
+
 const nodeTypes = { repositoryNode: RepositoryNode };
 const edgeTypes = { repositoryEdge: RepositoryEdge };
 
@@ -49,6 +59,38 @@ function initials(name: string) {
     .join("")
     .slice(0, 2)
     .toUpperCase();
+}
+
+function humanize(value: string) {
+  return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function nodeMatches(node: GraphNodeData, query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return (
+    node.label.toLowerCase().includes(needle) ||
+    node.path?.toLowerCase().includes(needle) === true ||
+    node.summary.toLowerCase().includes(needle) ||
+    node.evidence.some(
+      (item) =>
+        item.path.toLowerCase().includes(needle) ||
+        item.detail?.toLowerCase().includes(needle) === true,
+    )
+  );
+}
+
+function githubEvidenceUrl(
+  source: string,
+  revision: string | null | undefined,
+  path: string,
+) {
+  if (!revision) return null;
+  if (!/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(source))
+    return null;
+  const repositoryUrl = source.replace(/\/$/, "").replace(/\.git$/i, "");
+  const safePath = path.split("/").map(encodeURIComponent).join("/");
+  return `${repositoryUrl}/blob/${encodeURIComponent(revision)}/${safePath}`;
 }
 
 async function responseError(response: Response) {
@@ -67,15 +109,20 @@ function Atlas() {
     useState<RepoGraphFile | null>(null);
   const [graphId, setGraphId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [selectedEdgeId, setSelectedEdgeId] = useState("");
   const [direction, setDirection] = useState<LayoutDirection>("LR");
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const [showInferred, setShowInferred] = useState(true);
+  const [hideIsolated, setHideIsolated] = useState(false);
   const [visibleKinds, setVisibleKinds] = useState<Set<string>>(new Set());
   const [visibleEdgeKinds, setVisibleEdgeKinds] = useState<Set<string>>(
     new Set(),
   );
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(true);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("overview");
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
@@ -87,8 +134,9 @@ function Atlas() {
   const graph =
     activeRepository?.graphs.find((candidate) => candidate.id === graphId) ??
     activeRepository?.graphs[0];
-  const selectedNode =
-    graph?.nodes.find((node) => node.id === selectedNodeId) ?? graph?.nodes[0];
+  const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId);
+  const selectedEdge = graph?.edges.find((edge) => edge.id === selectedEdgeId);
+  const presentation = graph ? graphKindPresentation[graph.kind] : null;
   const availableKinds = useMemo(
     () => [...new Set(graph?.nodes.map((node) => node.kind) ?? [])].sort(),
     [graph],
@@ -97,21 +145,70 @@ function Atlas() {
     () => [...new Set(graph?.edges.map((edge) => edge.kind) ?? [])].sort(),
     [graph],
   );
-  const connectedEdges =
-    graph?.edges.filter(
-      (edge) =>
-        edge.source === selectedNode?.id || edge.target === selectedNode?.id,
-    ) ?? [];
-  const matchingNodes =
-    graph?.nodes.filter((node) => {
-      const needle = query.trim().toLowerCase();
-      return (
-        !needle ||
-        node.label.toLowerCase().includes(needle) ||
-        node.path?.toLowerCase().includes(needle) ||
-        node.summary.toLowerCase().includes(needle)
-      );
-    }).length ?? 0;
+  const excludedKinds = availableKinds.filter((kind) => !visibleKinds.has(kind));
+  const excludedEdgeKinds = availableEdgeKinds.filter(
+    (kind) => !visibleEdgeKinds.has(kind),
+  );
+  const activeFilterCount =
+    excludedKinds.length +
+    excludedEdgeKinds.length +
+    (showInferred ? 0 : 1) +
+    (hideIsolated ? 1 : 0);
+
+  const nodeIsVisible = useCallback(
+    (node: GraphNodeData) =>
+      visibleKinds.has(node.kind) &&
+      (showInferred || node.basis !== "inferred"),
+    [showInferred, visibleKinds],
+  );
+  const edgeIsVisible = useCallback(
+    (edge: GraphEdgeData) =>
+      Boolean(graph) &&
+      visibleEdgeKinds.has(edge.kind) &&
+      (showInferred || edge.basis !== "inferred") &&
+      graph!.nodes.some(
+        (node) => node.id === edge.source && nodeIsVisible(node),
+      ) &&
+      graph!.nodes.some(
+        (node) => node.id === edge.target && nodeIsVisible(node),
+      ),
+    [graph, nodeIsVisible, showInferred, visibleEdgeKinds],
+  );
+  const matchingSearchNodes = useMemo(
+    () =>
+      query.trim() && graph
+        ? graph.nodes
+            .filter((node) => nodeIsVisible(node) && nodeMatches(node, query))
+        : [],
+    [graph, nodeIsVisible, query],
+  );
+  const searchResults = matchingSearchNodes.slice(0, 10);
+  const matchingNodes = matchingSearchNodes.length;
+  const connectedEdges = useMemo(
+    () =>
+      selectedNode && graph
+        ? graph.edges.filter(
+            (edge) =>
+              edgeIsVisible(edge) &&
+              (edge.source === selectedNode.id ||
+                edge.target === selectedNode.id),
+          )
+        : [],
+    [edgeIsVisible, graph, selectedNode],
+  );
+  const evidencePathCount = useMemo(() => {
+    if (!graph) return 0;
+    return new Set(
+      [...graph.nodes, ...graph.edges].flatMap((item) =>
+        item.evidence.map((evidence) => evidence.path),
+      ),
+    ).size;
+  }, [graph]);
+  const selectedEvidence = selectedNode?.evidence ?? selectedEdge?.evidence ?? [];
+  const selectedBasis = selectedNode?.basis ?? selectedEdge?.basis;
+  const runtimeStepIndex = graph?.nodes.findIndex(
+    (node) => node.id === selectedNodeId,
+  ) ?? -1;
   const layout = useMemo(
     () =>
       graph
@@ -120,21 +217,27 @@ function Atlas() {
             direction,
             query,
             selectedNode?.id,
+            selectedEdge?.id,
             visibleKinds,
             visibleEdgeKinds,
             showInferred,
+            hideIsolated,
           )
         : { nodes: [], edges: [] },
     [
       direction,
       graph,
+      hideIsolated,
       query,
+      selectedEdge?.id,
       selectedNode?.id,
       showInferred,
       visibleEdgeKinds,
       visibleKinds,
     ],
   );
+  const visibleNodeCount = layout.nodes.filter((node) => !node.hidden).length;
+  const visibleEdgeCount = layout.edges.filter((edge) => !edge.hidden).length;
 
   const showMessage = useCallback((text: string, error = false) => {
     setMessage(text);
@@ -142,14 +245,28 @@ function Atlas() {
     window.setTimeout(() => setMessage(null), 5000);
   }, []);
 
+  const resetInspector = useCallback(() => {
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+    setDetailOpen(false);
+    setInspectorTab("overview");
+  }, []);
+
   const activateGraphFile = useCallback((graphFile: RepoGraphFile) => {
-    const firstGraph = graphFile.graphs[0];
+    const firstGraph =
+      graphFile.graphs.find((candidate) => candidate.kind === "architecture") ??
+      graphFile.graphs[0];
     setActiveRepository(graphFile);
     setGraphId(firstGraph.id);
-    setSelectedNodeId(firstGraph.nodes[0].id);
+    setDirection(graphKindPresentation[firstGraph.kind].defaultDirection);
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
     setVisibleKinds(new Set(firstGraph.nodes.map((node) => node.kind)));
     setVisibleEdgeKinds(new Set(firstGraph.edges.map((edge) => edge.kind)));
-    setDetailOpen(true);
+    setShowInferred(true);
+    setHideIsolated(false);
+    setDetailOpen(false);
+    setInspectorTab("overview");
     setQuery("");
   }, []);
 
@@ -195,7 +312,9 @@ function Atlas() {
         if (stored[0]) await loadRepository(stored[0].id);
       } catch (error) {
         showMessage(
-          error instanceof Error ? error.message : "Could not open repository library",
+          error instanceof Error
+            ? error.message
+            : "Could not open repository library",
           true,
         );
       } finally {
@@ -212,30 +331,34 @@ function Atlas() {
           padding: 0.16,
           duration: 350,
           maxZoom: 0.95,
-          minZoom: 0.38,
+          minZoom: 0.25,
         }),
       60,
     );
     return () => window.clearTimeout(timeout);
-  }, [direction, fitView, graph, showInferred, visibleEdgeKinds, visibleKinds]);
+  }, [direction, fitView, graph]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         searchInputRef.current?.focus();
+        if (query) setSearchOpen(true);
+      }
+      if (event.key === "Escape") {
+        setSearchOpen(false);
+        setFiltersOpen(false);
       }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [query]);
 
   const importFiles = useCallback(
     async (files: FileList | null) => {
       if (!files?.length) return;
       const candidates = [...files].filter(
-        (file) =>
-          file.name === "REPO_GRAPH.json" || file.name.endsWith(".json"),
+        (file) => file.name === "REPO_GRAPH.json" || file.name.endsWith(".json"),
       );
       let latest: RepoGraphFile | null = null;
       const failures: string[] = [];
@@ -292,17 +415,74 @@ function Atlas() {
     );
     if (!next) return;
     setGraphId(next.id);
-    setSelectedNodeId(next.nodes[0].id);
+    setDirection(graphKindPresentation[next.kind].defaultDirection);
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
     setVisibleKinds(new Set(next.nodes.map((node) => node.kind)));
     setVisibleEdgeKinds(new Set(next.edges.map((edge) => edge.kind)));
-    setDetailOpen(true);
+    setShowInferred(true);
+    setHideIsolated(false);
+    setDetailOpen(false);
+    setInspectorTab("overview");
+    setFiltersOpen(false);
     setQuery("");
+  };
+
+  const focusNodes = useCallback(
+    (ids: string[]) => {
+      window.setTimeout(
+        () =>
+          fitView({
+            nodes: ids.map((id) => ({ id })),
+            padding: 0.5,
+            duration: 350,
+            maxZoom: 1.12,
+          }),
+        20,
+      );
+    },
+    [fitView],
+  );
+
+  const selectNode = useCallback(
+    (nodeId: string, focus = false) => {
+      setSelectedNodeId(nodeId);
+      setSelectedEdgeId("");
+      setInspectorTab("overview");
+      setDetailOpen(true);
+      setSearchOpen(false);
+      if (focus) focusNodes([nodeId]);
+    },
+    [focusNodes],
+  );
+
+  const selectEdge = useCallback(
+    (edgeId: string, focus = false) => {
+      const edge = graph?.edges.find((candidate) => candidate.id === edgeId);
+      if (!edge) return;
+      setSelectedEdgeId(edgeId);
+      setSelectedNodeId("");
+      setInspectorTab("overview");
+      setDetailOpen(true);
+      setSearchOpen(false);
+      if (focus) focusNodes([edge.source, edge.target]);
+    },
+    [focusNodes, graph],
+  );
+
+  const resetFilters = () => {
+    if (!graph) return;
+    setVisibleKinds(new Set(graph.nodes.map((node) => node.kind)));
+    setVisibleEdgeKinds(new Set(graph.edges.map((edge) => edge.kind)));
+    setShowInferred(true);
+    setHideIsolated(false);
   };
 
   const toggleSetValue = (
     setter: React.Dispatch<React.SetStateAction<Set<string>>>,
     value: string,
   ) => {
+    resetInspector();
     setter((current) => {
       const next = new Set(current);
       if (next.has(value)) next.delete(value);
@@ -310,6 +490,54 @@ function Atlas() {
       return next;
     });
   };
+
+  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" && searchResults.length) {
+      event.preventDefault();
+      setSearchOpen(true);
+      setActiveSearchIndex((current) => (current + 1) % searchResults.length);
+    } else if (event.key === "ArrowUp" && searchResults.length) {
+      event.preventDefault();
+      setSearchOpen(true);
+      setActiveSearchIndex(
+        (current) => (current - 1 + searchResults.length) % searchResults.length,
+      );
+    } else if (event.key === "Enter" && searchResults.length) {
+      event.preventDefault();
+      selectNode(searchResults[activeSearchIndex]?.id ?? searchResults[0].id, true);
+    } else if (event.key === "Escape") {
+      setSearchOpen(false);
+    }
+  };
+
+  const stepRuntime = (offset: number) => {
+    if (!graph?.nodes.length) return;
+    const current = runtimeStepIndex < 0 ? (offset > 0 ? -1 : 0) : runtimeStepIndex;
+    const next = (current + offset + graph.nodes.length) % graph.nodes.length;
+    selectNode(graph.nodes[next].id, true);
+  };
+
+  const copyEvidence = async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+      showMessage(`Copied ${path}`);
+    } catch {
+      showMessage("Could not copy the evidence path.", true);
+    }
+  };
+
+  const edgeSource = selectedEdge
+    ? graph?.nodes.find((node) => node.id === selectedEdge.source)
+    : null;
+  const edgeTarget = selectedEdge
+    ? graph?.nodes.find((node) => node.id === selectedEdge.target)
+    : null;
+  const detailTitle = selectedNode?.label ?? selectedEdge?.label;
+  const detailKind = selectedNode?.kind ?? (selectedEdge ? "relationship" : "");
+  const repositoryRevision = activeRepository?.repository.revision;
+  const revisionLabel = repositoryRevision
+    ? repositoryRevision.slice(0, 8)
+    : "working tree";
 
   return (
     <main
@@ -336,7 +564,13 @@ function Atlas() {
 
       <aside className="atlas-sidebar">
         <div className="atlas-brand">
-          <img className="atlas-brand-mark" src="/favicon.svg" alt="" width={31} height={31} />
+          <Image
+            className="atlas-brand-mark"
+            src="/favicon.svg"
+            alt=""
+            width={31}
+            height={31}
+          />
           <div>
             <strong>ContextKit</strong>
             <span>Repository atlas</span>
@@ -360,7 +594,9 @@ function Atlas() {
                   <span className="repo-avatar">{initials(repository.name)}</span>
                   <span>
                     <strong>{repository.name}</strong>
-                    <small>{repository.graphCount} views · {repository.nodeCount} nodes</small>
+                    <small>
+                      {repository.graphCount} views · {repository.nodeCount} nodes
+                    </small>
                   </span>
                 </button>
               ))}
@@ -371,23 +607,36 @@ function Atlas() {
         </section>
 
         {activeRepository ? (
-          <nav className="graph-nav" aria-label="Graph views">
-            <span className="section-label">Graph views</span>
-            {activeRepository.graphs.map((candidate, index) => (
-              <button
-                className={candidate.id === graph?.id ? "is-active" : ""}
-                key={candidate.id}
-                onClick={() => selectGraph(candidate.id)}
-              >
-                <span className="nav-index">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
-                <span>
-                  <strong>{candidate.title}</strong>
-                  <small>{candidate.nodes.length} nodes · {candidate.edges.length} links</small>
-                </span>
-              </button>
-            ))}
+          <nav className="graph-nav" aria-label="Repository lenses">
+            <span className="section-label">Repository lenses</span>
+            {graphKindOrder.map((kind) => {
+              const candidate = activeRepository.graphs.find(
+                (item) => item.kind === kind,
+              );
+              const item = graphKindPresentation[kind];
+              return (
+                <button
+                  aria-current={candidate?.id === graph?.id ? "page" : undefined}
+                  className={`${candidate?.id === graph?.id ? "is-active" : ""} ${
+                    candidate ? "" : "is-unavailable"
+                  }`}
+                  disabled={!candidate}
+                  key={kind}
+                  onClick={() => candidate && selectGraph(candidate.id)}
+                  title={candidate ? candidate.title : `${item.label} was not generated`}
+                >
+                  <span className="view-icon" aria-hidden="true">{item.icon}</span>
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>
+                      {candidate
+                        ? `${candidate.nodes.length} nodes · ${candidate.edges.length} relationships`
+                        : "Not generated"}
+                    </small>
+                  </span>
+                </button>
+              );
+            })}
           </nav>
         ) : null}
 
@@ -427,12 +676,14 @@ function Atlas() {
               {loading ? "Opening library" : "No repositories yet"}
             </span>
             <h2>
-              {loading ? "Checking SQLite…" : "Bring your first repository into view"}
+              {loading
+                ? "Checking SQLite…"
+                : "Bring your first repository into view"}
             </h2>
             <p>
               Generate a <code>REPO_GRAPH.json</code> with ContextKit, then
-              import it here. Its architecture and execution flows will be
-              stored in SQLite.
+              import it here. Architecture, runtime, dependency, and deployment
+              views are stored in SQLite.
             </p>
             <button onClick={() => fileInputRef.current?.click()}>
               Choose graph file
@@ -444,34 +695,134 @@ function Atlas() {
         <section className="workspace">
           <header className="toolbar">
             <div>
-              <span className="eyebrow">{activeRepository.repository.id}</span>
+              <span className="eyebrow">
+                {activeRepository.repository.name} · {revisionLabel}
+              </span>
               <h1>{graph.title}</h1>
             </div>
             <div className="toolbar-actions">
-              <label className="search-box">
-                <span aria-hidden="true">⌕</span>
-                <input
-                  ref={searchInputRef}
-                  aria-label="Search graph"
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Find module or path"
-                  type="search"
-                  value={query}
-                />
-                <kbd>⌘ K</kbd>
-              </label>
+              <div className="search-wrap">
+                <label className="search-box">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    ref={searchInputRef}
+                    aria-controls="graph-search-results"
+                    aria-expanded={searchOpen && Boolean(query)}
+                    aria-label="Search graph"
+                    role="combobox"
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      setActiveSearchIndex(0);
+                      setSearchOpen(Boolean(event.target.value));
+                    }}
+                    onFocus={() => query && setSearchOpen(true)}
+                    onKeyDown={handleSearchKeyDown}
+                    placeholder="Find module or path"
+                    type="search"
+                    value={query}
+                  />
+                  {query ? (
+                    <button
+                      aria-label="Clear search"
+                      className="search-clear"
+                      onClick={() => {
+                        setQuery("");
+                        setSearchOpen(false);
+                        searchInputRef.current?.focus();
+                      }}
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  ) : (
+                    <kbd>⌘ K</kbd>
+                  )}
+                </label>
+                {searchOpen && query ? (
+                  <div
+                    className="search-results"
+                    id="graph-search-results"
+                    role="listbox"
+                  >
+                    <div className="search-results-heading">
+                      <span>Matches in this view</span>
+                      <small>{matchingNodes}</small>
+                    </div>
+                    {searchResults.length ? (
+                      searchResults.map((node, index) => (
+                        <button
+                          aria-selected={index === activeSearchIndex}
+                          className={index === activeSearchIndex ? "is-active" : ""}
+                          key={node.id}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onMouseEnter={() => setActiveSearchIndex(index)}
+                          onClick={() => selectNode(node.id, true)}
+                          role="option"
+                        >
+                          <span className={`legend-dot legend-dot--${node.kind}`} />
+                          <span>
+                            <strong>{node.label}</strong>
+                            <small>{node.path ?? node.summary}</small>
+                          </span>
+                          <em>{humanize(node.kind)}</em>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="search-empty">No visible nodes match “{query}”.</p>
+                    )}
+                    <div className="search-help">↑↓ move · Enter inspect · Esc close</div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="basis-switch" aria-label="Evidence basis">
+                <button
+                  aria-pressed={showInferred}
+                  className={showInferred ? "is-active" : ""}
+                  onClick={() => {
+                    resetInspector();
+                    setShowInferred(true);
+                  }}
+                >
+                  All
+                </button>
+                <button
+                  aria-pressed={!showInferred}
+                  className={!showInferred ? "is-active" : ""}
+                  onClick={() => {
+                    resetInspector();
+                    setShowInferred(false);
+                  }}
+                >
+                  Observed
+                </button>
+              </div>
+
               <div className="filter-wrap">
                 <button
-                  className={`filter-button ${filtersOpen ? "is-active" : ""}`}
+                  aria-expanded={filtersOpen}
+                  className={`filter-button ${
+                    filtersOpen || activeFilterCount ? "is-active" : ""
+                  }`}
                   onClick={() => setFiltersOpen((current) => !current)}
                 >
-                  Filters <span>{visibleKinds.size}/{availableKinds.length}</span>
+                  Filters <span>{activeFilterCount || "All"}</span>
                 </button>
                 {filtersOpen ? (
                   <div className="filter-menu">
+                    <div className="filter-menu-title">
+                      <strong>Filter this lens</strong>
+                      <button disabled={!activeFilterCount} onClick={resetFilters}>
+                        Reset
+                      </button>
+                    </div>
                     <div className="filter-menu-heading">
                       <strong>Node types</strong>
-                      <button onClick={() => setVisibleKinds(new Set(availableKinds))}>All</button>
+                      <button
+                        onClick={() => setVisibleKinds(new Set(availableKinds))}
+                      >
+                        All
+                      </button>
                     </div>
                     {availableKinds.map((kind) => (
                       <label key={kind}>
@@ -481,37 +832,53 @@ function Atlas() {
                           type="checkbox"
                         />
                         <span className={`legend-dot legend-dot--${kind}`} />
-                        {kind.replace("-", " ")}
-                        <small>{graph.nodes.filter((node) => node.kind === kind).length}</small>
+                        {humanize(kind)}
+                        <small>
+                          {graph.nodes.filter((node) => node.kind === kind).length}
+                        </small>
                       </label>
                     ))}
                     <div className="filter-menu-heading relationship-heading">
                       <strong>Relationships</strong>
-                      <button onClick={() => setVisibleEdgeKinds(new Set(availableEdgeKinds))}>All</button>
+                      <button
+                        onClick={() =>
+                          setVisibleEdgeKinds(new Set(availableEdgeKinds))
+                        }
+                      >
+                        All
+                      </button>
                     </div>
                     {availableEdgeKinds.map((kind) => (
                       <label key={kind}>
                         <input
                           checked={visibleEdgeKinds.has(kind)}
-                          onChange={() => toggleSetValue(setVisibleEdgeKinds, kind)}
+                          onChange={() =>
+                            toggleSetValue(setVisibleEdgeKinds, kind)
+                          }
                           type="checkbox"
                         />
                         <span className="edge-swatch" />
-                        {kind.replace("_", " ")}
-                        <small>{graph.edges.filter((edge) => edge.kind === kind).length}</small>
+                        {humanize(kind)}
+                        <small>
+                          {graph.edges.filter((edge) => edge.kind === kind).length}
+                        </small>
                       </label>
                     ))}
                     <label className="inferred-toggle">
                       <input
-                        checked={showInferred}
-                        onChange={(event) => setShowInferred(event.target.checked)}
+                        checked={hideIsolated}
+                        onChange={(event) => {
+                          resetInspector();
+                          setHideIsolated(event.target.checked);
+                        }}
                         type="checkbox"
                       />
-                      Show inferred relationships
+                      Hide unconnected nodes
                     </label>
                   </div>
                 ) : null}
               </div>
+
               <div className="direction-switch" aria-label="Layout direction">
                 <button
                   aria-label="Horizontal layout"
@@ -539,9 +906,62 @@ function Atlas() {
 
           <div className="canvas-wrap">
             <div className="canvas-caption">
-              <span>{graph.kind.replace("-", " ")}</span>
-              <p>{graph.description}</p>
-              {query ? <small>{matchingNodes} matching nodes</small> : null}
+              <div className="caption-main">
+                <span className="lens-pill">{presentation?.label}</span>
+                <div>
+                  <p>{graph.description}</p>
+                  <small>
+                    {visibleNodeCount} nodes · {visibleEdgeCount} relationships ·{" "}
+                    {evidencePathCount} evidence paths
+                  </small>
+                </div>
+                {graph.kind === "runtime-flow" ? (
+                  <div className="runtime-controls" aria-label="Runtime steps">
+                    <button aria-label="Previous runtime step" onClick={() => stepRuntime(-1)}>←</button>
+                    <span>
+                      {runtimeStepIndex >= 0
+                        ? `Step ${runtimeStepIndex + 1} of ${graph.nodes.length}`
+                        : `${graph.nodes.length} steps`}
+                    </span>
+                    <button aria-label="Next runtime step" onClick={() => stepRuntime(1)}>→</button>
+                  </div>
+                ) : query ? (
+                  <span className="match-count">{matchingNodes} matches</span>
+                ) : null}
+              </div>
+              {activeFilterCount ? (
+                <div className="filter-chips" aria-label="Active filters">
+                  {excludedKinds.map((kind) => (
+                    <button
+                      key={`node-${kind}`}
+                      onClick={() => toggleSetValue(setVisibleKinds, kind)}
+                    >
+                      {humanize(kind)} hidden <span>×</span>
+                    </button>
+                  ))}
+                  {excludedEdgeKinds.map((kind) => (
+                    <button
+                      key={`edge-${kind}`}
+                      onClick={() => toggleSetValue(setVisibleEdgeKinds, kind)}
+                    >
+                      {humanize(kind)} hidden <span>×</span>
+                    </button>
+                  ))}
+                  {!showInferred ? (
+                    <button onClick={() => setShowInferred(true)}>
+                      Observed only <span>×</span>
+                    </button>
+                  ) : null}
+                  {hideIsolated ? (
+                    <button onClick={() => setHideIsolated(false)}>
+                      Connected only <span>×</span>
+                    </button>
+                  ) : null}
+                  <button className="clear-filters" onClick={resetFilters}>
+                    Clear all
+                  </button>
+                </div>
+              ) : null}
             </div>
             <ReactFlow
               colorMode="light"
@@ -549,17 +969,15 @@ function Atlas() {
               edgeTypes={edgeTypes}
               edges={layout.edges}
               fitView
-              fitViewOptions={{ padding: 0.16, maxZoom: 0.95, minZoom: 0.38 }}
+              fitViewOptions={{ padding: 0.16, maxZoom: 0.95, minZoom: 0.25 }}
               minZoom={0.25}
               nodeTypes={nodeTypes}
               nodes={layout.nodes}
               nodesConnectable={false}
               nodesDraggable={false}
-              onNodeClick={(_, node) => {
-                setSelectedNodeId(node.id);
-                setDetailOpen(true);
-              }}
-              onPaneClick={() => setDetailOpen(false)}
+              onEdgeClick={(_, edge) => selectEdge(edge.id)}
+              onNodeClick={(_, node) => selectNode(node.id)}
+              onPaneClick={resetInspector}
               onlyRenderVisibleElements
               proOptions={{ hideAttribution: true }}
             >
@@ -576,67 +994,200 @@ function Atlas() {
                   node.id === selectedNode?.id ? "#ef6f51" : "#214e50"
                 }
                 pannable
+                // React Flow derives the svg size and viewport mask from these, so
+                // they must live here rather than in CSS.
+                style={{ width: 132, height: 88 }}
                 zoomable
               />
               <Controls className="graph-controls" showInteractive={false} />
             </ReactFlow>
+            <div className="basis-legend" aria-label="Graph evidence legend">
+              <span><i className="observed-line" />Observed</span>
+              <span><i className="inferred-line" />Inferred</span>
+            </div>
           </div>
         </section>
       )}
 
-      {activeRepository && graph && selectedNode && detailOpen ? (
+      {activeRepository && graph && detailTitle && detailOpen ? (
         <aside className="detail-panel">
           <div className="detail-topline">
-            <span className={`type-pill type-pill--${selectedNode.kind}`}>
-              {selectedNode.kind}
-            </span>
-            <button aria-label="Close details" onClick={() => setDetailOpen(false)}>×</button>
-          </div>
-          <h2>{selectedNode.label}</h2>
-          {selectedNode.path ? <code className="path-chip">{selectedNode.path}</code> : null}
-          <p className="detail-summary">{selectedNode.summary}</p>
-
-          <section className="detail-section">
-            <div className="detail-section-heading"><h3>Evidence</h3><span>{selectedNode.evidence.length}</span></div>
-            <div className="evidence-list">
-              {selectedNode.evidence.map((item) => (
-                <button
-                  className="evidence-item"
-                  key={`${item.path}-${item.detail ?? ""}`}
-                  onClick={() => void navigator.clipboard?.writeText(item.path)}
-                  title="Copy repository path"
-                >
-                  <span aria-hidden="true">⌁</span>
-                  <div><code>{item.path}</code>{item.detail ? <p>{item.detail}</p> : null}</div>
-                </button>
-              ))}
+            <div className="detail-badges">
+              <span className={`type-pill type-pill--${detailKind}`}>
+                {humanize(detailKind)}
+              </span>
+              <span className={`basis-pill basis-pill--${selectedBasis}`}>
+                {selectedBasis}
+              </span>
             </div>
-          </section>
+            <button aria-label="Close details" onClick={resetInspector}>×</button>
+          </div>
+          <h2>{detailTitle}</h2>
+          {selectedNode?.path ? (
+            <code className="path-chip">{selectedNode.path}</code>
+          ) : null}
 
-          <section className="detail-section relationships">
-            <div className="detail-section-heading"><h3>Relationships</h3><span>{connectedEdges.length}</span></div>
-            {connectedEdges.slice(0, 8).map((edge) => {
-              const outward = edge.source === selectedNode.id;
-              const otherId = outward ? edge.target : edge.source;
-              const other = graph.nodes.find((node) => node.id === otherId);
-              return (
-                <button key={edge.id} onClick={() => setSelectedNodeId(otherId)}>
-                  <span className="relation-arrow">{outward ? "→" : "←"}</span>
-                  <span><small>{edge.label}</small><strong>{other?.label ?? otherId}</strong></span>
+          <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
+            {(["overview", "evidence", "relationships"] as InspectorTab[]).map(
+              (tab) => (
+                <button
+                  aria-selected={inspectorTab === tab}
+                  className={inspectorTab === tab ? "is-active" : ""}
+                  key={tab}
+                  onClick={() => setInspectorTab(tab)}
+                  role="tab"
+                >
+                  {tab}
+                  {tab === "evidence" ? <span>{selectedEvidence.length}</span> : null}
+                  {tab === "relationships" && selectedNode ? (
+                    <span>{connectedEdges.length}</span>
+                  ) : null}
                 </button>
-              );
-            })}
-          </section>
+              ),
+            )}
+          </div>
+
+          <div className="inspector-content">
+            {inspectorTab === "overview" ? (
+              <section className="overview-panel">
+                {selectedNode ? (
+                  <>
+                    <span className="detail-label">Responsibility</span>
+                    <p className="detail-summary">{selectedNode.summary}</p>
+                    <dl className="detail-metadata">
+                      <div><dt>Node type</dt><dd>{humanize(selectedNode.kind)}</dd></div>
+                      <div><dt>Evidence basis</dt><dd>{selectedNode.basis}</dd></div>
+                    </dl>
+                  </>
+                ) : selectedEdge ? (
+                  <>
+                    <span className="detail-label">Relationship</span>
+                    <div className="edge-route">
+                      <strong>{edgeSource?.label ?? selectedEdge.source}</strong>
+                      <span>→</span>
+                      <strong>{edgeTarget?.label ?? selectedEdge.target}</strong>
+                    </div>
+                    <dl className="detail-metadata">
+                      <div><dt>Relationship type</dt><dd>{humanize(selectedEdge.kind)}</dd></div>
+                      <div><dt>Evidence basis</dt><dd>{selectedEdge.basis}</dd></div>
+                    </dl>
+                  </>
+                ) : null}
+              </section>
+            ) : null}
+
+            {inspectorTab === "evidence" ? (
+              <section className="detail-section evidence-section">
+                <div className="detail-section-heading">
+                  <h3>Repository evidence</h3>
+                  <span>{selectedEvidence.length}</span>
+                </div>
+                {selectedEvidence.length ? (
+                  <div className="evidence-list">
+                    {selectedEvidence.map((item) => {
+                      const sourceUrl = githubEvidenceUrl(
+                        activeRepository.repository.source,
+                        repositoryRevision,
+                        item.path,
+                      );
+                      return (
+                        <article
+                          className="evidence-item"
+                          key={`${item.path}-${item.detail ?? ""}`}
+                        >
+                          <span aria-hidden="true">⌁</span>
+                          <div>
+                            <code>{item.path}</code>
+                            {item.detail ? <p>{item.detail}</p> : null}
+                            <div className="evidence-actions">
+                              {sourceUrl ? (
+                                <a href={sourceUrl} target="_blank" rel="noreferrer">
+                                  Open at {revisionLabel} ↗
+                                </a>
+                              ) : null}
+                              <button onClick={() => void copyEvidence(item.path)}>
+                                Copy path
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="inspector-empty">
+                    <span>○</span>
+                    <p>No repository path was attached to this item.</p>
+                  </div>
+                )}
+              </section>
+            ) : null}
+
+            {inspectorTab === "relationships" ? (
+              <section className="detail-section relationships">
+                <div className="detail-section-heading">
+                  <h3>{selectedNode ? "Connected items" : "Endpoints"}</h3>
+                  <span>{selectedNode ? connectedEdges.length : 2}</span>
+                </div>
+                {selectedNode ? (
+                  connectedEdges.length ? (
+                    connectedEdges.map((edge) => {
+                      const outward = edge.source === selectedNode.id;
+                      const otherId = outward ? edge.target : edge.source;
+                      const other = graph.nodes.find((node) => node.id === otherId);
+                      return (
+                        <button key={edge.id} onClick={() => selectEdge(edge.id, true)}>
+                          <span className="relation-arrow">{outward ? "→" : "←"}</span>
+                          <span>
+                            <small>{edge.label}</small>
+                            <strong>{other?.label ?? otherId}</strong>
+                          </span>
+                          <em className={`relation-basis relation-basis--${edge.basis}`}>
+                            {edge.basis}
+                          </em>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="inspector-empty">
+                      <span>○</span>
+                      <p>No relationships are visible with the current filters.</p>
+                    </div>
+                  )
+                ) : (
+                  <div className="endpoint-list">
+                    {[edgeSource, edgeTarget].map((node, index) =>
+                      node ? (
+                        <button key={node.id} onClick={() => selectNode(node.id, true)}>
+                          <span>{index === 0 ? "Source" : "Target"}</span>
+                          <strong>{node.label}</strong>
+                          <small>{node.path ?? humanize(node.kind)}</small>
+                        </button>
+                      ) : null,
+                    )}
+                  </div>
+                )}
+              </section>
+            ) : null}
+          </div>
 
           <footer className="detail-footer">
-            <span className={selectedNode.basis === "observed" ? "verified" : "inferred"} />
-            <p><strong>{selectedNode.basis === "observed" ? "Observed" : "Inferred"}</strong><br />from repository evidence</p>
+            <span className={selectedBasis === "observed" ? "verified" : "inferred"} />
+            <p>
+              <strong>{selectedBasis === "observed" ? "Observed" : "Inferred"}</strong>
+              <br />
+              {selectedBasis === "observed"
+                ? "Backed by repository evidence"
+                : "Model-inferred from repository context"}
+            </p>
           </footer>
         </aside>
       ) : null}
 
       {message ? (
-        <div className={`load-toast ${isError ? "is-error" : ""}`}>{message}</div>
+        <div className={`load-toast ${isError ? "is-error" : ""}`}>
+          {message}
+        </div>
       ) : null}
     </main>
   );
