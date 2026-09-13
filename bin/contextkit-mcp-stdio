@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+/**
+ * contextkit-mcp-stdio - serve one frozen run to an MCP client over stdio.
+ *
+ * Launched by a provider CLI, not by a person. It exposes exactly what
+ * contextkit-mcp shows interactively, through the same server object, so the boundary a
+ * model meets is the one the tests exercise.
+ *
+ * Usage (as configured in an MCP client):
+ *   contextkit-mcp-stdio <run-dir> [--log <file>]
+ *
+ * stdout carries the protocol. Diagnostics go to stderr - note that a host such as
+ * Claude Code captures that stream into its own logs rather than passing it through, so
+ * stderr is not a reliable channel back to whoever started the analysis. The --log file
+ * is.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { RunStore } from "../src/analysis/mcp/run-store.mjs";
+import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
+import { StdioTransport } from "../src/analysis/mcp/stdio-transport.mjs";
+
+const args = process.argv.slice(2);
+let runDir = null;
+let logPath = null;
+
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === "--log") logPath = args[++i];
+  else if (!args[i].startsWith("-")) runDir ??= args[i];
+}
+
+if (!runDir) {
+  process.stderr.write("usage: contextkit-mcp-stdio <run-dir> [--log <file>]\n");
+  process.exit(2);
+}
+
+/**
+ * Append each access as it happens, rather than writing the log at exit.
+ *
+ * A provider CLI ends the session by killing this process, not by closing stdin - which
+ * a first run proved by producing a complete analysis and an empty log. SIGKILL cannot
+ * be trapped, so the only way the record survives is to write it line by line. The
+ * `.jsonl` companion is the durable one; the summary at the end is a convenience that
+ * may legitimately be missing.
+ */
+let appendAccess = null;
+if (logPath) {
+  const resolved = path.resolve(logPath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const stream = fs.createWriteStream(`${resolved}l`, { flags: "a" }); // .jsonl
+  appendAccess = (entry) => stream.write(`${JSON.stringify(entry)}\n`);
+}
+
+let server;
+try {
+  server = new ContextKitMcpServer(RunStore.fromDirectory(path.resolve(runDir)), {
+    onAccess: appendAccess,
+  });
+} catch (error) {
+  process.stderr.write(`contextkit-mcp-stdio: cannot load run from ${runDir}: ${error.message}\n`);
+  process.exit(2);
+}
+
+process.stderr.write(`contextkit-mcp-stdio: serving ${server.runId} from ${runDir}\n`);
+
+function writeSummary() {
+  if (!logPath) return;
+  try {
+    fs.writeFileSync(path.resolve(logPath), JSON.stringify(server.report(), null, 2));
+  } catch { /* the jsonl already holds the record */ }
+}
+
+// Best-effort on the signals that can be caught; the jsonl covers the ones that cannot.
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+  process.on(signal, () => {
+    writeSummary();
+    process.exit(0);
+  });
+}
+process.on("beforeExit", writeSummary);
+
+const transport = new StdioTransport(server);
+await transport.start();
+
+writeSummary();
+const report = server.report();
+process.stderr.write(
+  `contextkit-mcp-stdio: ${report.calls} calls, ${report.denied} denied, `
+  + `${report.requestedEvidence.length} evidence resolved\n`);

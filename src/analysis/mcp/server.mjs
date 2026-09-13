@@ -18,11 +18,18 @@ import { buildProtectedSnapshot, validateAnnotations } from "../merge/protected-
 const RESOURCE_PREFIX = "contextkit://runs/";
 
 export class ContextKitMcpServer {
-  /** @param {import("./run-store.mjs").RunStore} store */
-  constructor(store, { limits = LIMITS } = {}) {
+  /**
+   * @param {import("./run-store.mjs").RunStore} store
+   * @param {{limits?: object, onAccess?: (entry: object) => void}} [options]
+   *   `onAccess` fires for every logged call. A transport uses it to persist the log as
+   *   it happens: a provider CLI may kill the server process rather than closing stdin,
+   *   and a write deferred to exit is then simply lost.
+   */
+  constructor(store, { limits = LIMITS, onAccess = null } = {}) {
     this.store = store;
     this.limits = limits;
     this.runId = store.runId;
+    this.onAccess = onAccess;
     this.accessLog = [];
     // Evidence the provider asked to have materialized during analysis. Kept apart
     // from scanner evidence so the run report can show what the model requested.
@@ -34,12 +41,20 @@ export class ContextKitMcpServer {
   }
 
   log(kind, name, params, outcome, detail) {
-    this.accessLog.push({
+    const entry = {
       at: new Date().toISOString(),
       runId: this.runId, kind, name,
       params: JSON.stringify(params ?? {}).slice(0, 400),
       outcome, detail: detail ? String(detail).slice(0, 300) : null,
-    });
+    };
+    this.accessLog.push(entry);
+    // A failing sink must never take down the server: the log is diagnostic, the
+    // boundary is not.
+    if (this.onAccess) {
+      try {
+        this.onAccess(entry);
+      } catch { /* ignore */ }
+    }
   }
 
   /** Wrap a handler so every call - allowed or denied - lands in the run report. */
@@ -146,16 +161,131 @@ export class ContextKitMcpServer {
 
   // -------------------------------------------------------------------- tools
 
+  /**
+   * Tool descriptors, with the input schemas an MCP transport requires.
+   *
+   * The descriptions are written for the model that will read them, so each one says
+   * what the tool is *for* rather than what it does mechanically - a provider with no
+   * filesystem access needs to be told that ids are the only way in, or it will spend
+   * its first turns trying to read files that are not there.
+   */
   listTools() {
+    const str = (description) => ({ type: "string", description });
+    const strArray = (description) => ({ type: "array", items: { type: "string" }, description });
     return [
-      { name: "search_facts", description: "Search detections, symbols, and files by substring." },
-      { name: "get_records", description: "Fetch records by id from this run." },
-      { name: "get_source_chunks", description: "Fetch cached source chunks by id." },
-      { name: "find_chunks", description: "Find chunks by path, symbol, line range, or role." },
-      { name: "get_neighbors", description: "Walk call and declaration edges from a symbol." },
-      { name: "resolve_evidence", description: "Materialize canonical evidence from a cached chunk range." },
-      { name: "validate_slice", description: "Validate a candidate slice result against this run." },
-      { name: "report_dispute", description: "Record a disagreement with a static observation." },
+      {
+        name: "search_facts",
+        description: "Find records by substring across detections, symbols, and file paths. "
+          + "Start here: the repository is not on disk, so search is how you discover ids.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: str("Substring to look for, case-insensitive."),
+            kinds: strArray("Optional collections to restrict to, e.g. routes, code.symbols, files."),
+            limit: { type: "integer", description: `Maximum results (max ${this.limits.maxSearchResults}).` },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "get_records",
+        description: "Fetch full records for ids already known from a search or a neighbour walk.",
+        inputSchema: {
+          type: "object",
+          properties: { ids: strArray("Record ids from this run.") },
+          required: ["ids"],
+        },
+      },
+      {
+        name: "get_source_chunks",
+        description: "Read cached source text by chunk id. Chunks marked sensitive return "
+          + "metadata with no content.",
+        inputSchema: {
+          type: "object",
+          properties: { chunkIds: strArray("Chunk ids from find_chunks.") },
+          required: ["chunkIds"],
+        },
+      },
+      {
+        name: "find_chunks",
+        description: "Locate cached source for a repository-relative path or a symbol id. "
+          + "Use this to get chunk ids before reading source.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: str("Repository-relative path, never a host path."),
+            symbolId: str("Symbol id to cover."),
+            lineStart: { type: "integer" },
+            lineEnd: { type: "integer" },
+            roles: strArray("Optional chunk roles to filter by."),
+            limit: { type: "integer" },
+          },
+        },
+      },
+      {
+        name: "get_neighbors",
+        description: "Walk call and declaration edges from a symbol to find what reaches it "
+          + "and what it reaches.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: str("Symbol or record id to start from."),
+            edgeKinds: strArray("Any of: calls, called-by, declares, declared-in."),
+            depth: { type: "integer", description: `Hops to follow (max ${this.limits.maxNeighborDepth}).` },
+            limit: { type: "integer" },
+          },
+          required: ["id"],
+        },
+      },
+      {
+        name: "resolve_evidence",
+        description: "Turn a cached source range into a canonical evidence id. Required before "
+          + "any claim with observed basis. You cannot author evidence yourself: the excerpt "
+          + "and id are derived from cached content.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            chunkId: str("Chunk containing the region."),
+            lineStart: { type: "integer" },
+            lineEnd: { type: "integer" },
+            detail: str("What this region declares, in your own words."),
+          },
+          required: ["chunkId", "detail"],
+        },
+      },
+      {
+        name: "validate_slice",
+        description: "Check a candidate result before submitting it. Reports protected-field, "
+          + "grounding, and reference violations so they can be corrected.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sliceId: str("Which slice this result is for."),
+            candidate: {
+              type: "object",
+              description: "Object with `annotations` (targetId, basis, evidenceIds, fields) "
+                + "and optional `entities`. Fields may only carry semantic enrichment; "
+                + "scanner-measured values are rejected.",
+            },
+          },
+          required: ["sliceId", "candidate"],
+        },
+      },
+      {
+        name: "report_dispute",
+        description: "Record disagreement with a static observation instead of contradicting it "
+          + "in your output.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            targetId: str("Record you disagree with."),
+            field: str("Which field, if specific."),
+            reason: str("Why the observation looks wrong."),
+            evidenceIds: strArray("Evidence supporting the dispute."),
+          },
+          required: ["targetId", "reason"],
+        },
+      },
     ];
   }
 

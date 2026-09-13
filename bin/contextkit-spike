@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+/**
+ * contextkit-spike - Phase 0's transport compatibility check.
+ *
+ * Asks both providers the same small question about the same frozen run, through the
+ * same MCP boundary, and compares what comes back. The exit criterion is not "a model
+ * said something useful" but "both adapters return the same small structured fixture
+ * through the chosen MCP boundary", so the question is deliberately trivial and the
+ * schema deliberately tight.
+ *
+ * It also answers the question the shell implementation could not: with no repository on
+ * disk and filesystem tools withheld, can a provider still reach the facts at all?
+ *
+ * Usage:
+ *   contextkit-spike <run-dir|repository> [--provider claude|codex|both] [--model <id>] [--dry-run]
+ *
+ * A repository with no run yet is scanned first, into a temporary directory outside it.
+ *
+ * --dry-run prints the exact commands without contacting a provider, which is the safe
+ * way to inspect what would be sent.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { RunStore } from "../src/analysis/mcp/run-store.mjs";
+import { ensureRunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { ClaudeCliProvider } from "../src/analysis/providers/claude-cli.mjs";
+import { CodexCliProvider } from "../src/analysis/providers/codex-cli.mjs";
+import { mcpServerDescriptor } from "../src/analysis/providers/provider.mjs";
+
+const args = process.argv.slice(2);
+let runDir = null;
+let which = "both";
+let model = null;
+let dryRun = false;
+let outOverride = null;
+
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === "--provider") which = args[++i];
+  else if (args[i] === "--model") model = args[++i];
+  else if (args[i] === "--dry-run") dryRun = true;
+  else if (args[i] === "--out") outOverride = args[++i];
+  else if (args[i] === "-h" || args[i] === "--help") {
+    process.stdout.write("usage: contextkit-spike <run-dir|repository> [--provider claude|codex|both] "
+      + "[--model <id>] [--out <dir>] [--dry-run]\n");
+    process.exit(0);
+  } else if (!args[i].startsWith("-")) runDir ??= args[i];
+}
+
+if (!runDir) {
+  process.stderr.write("usage: contextkit-spike <run-dir|repository> [--provider claude|codex|both]\n");
+  process.exit(2);
+}
+
+let workspace;
+try {
+  ({ workspace } = ensureRunWorkspace(runDir, { workRoot: outOverride }));
+} catch (error) {
+  process.stderr.write(`contextkit-spike: ${error.message}\n`);
+  process.stderr.write("Pass a repository to scan, or a run directory from contextkit-scan --out.\n");
+  process.exit(2);
+}
+
+const resolvedRunDir = workspace.dir;
+const store = RunStore.fromDirectory(resolvedRunDir);
+const summary = store.summary();
+
+/**
+ * The fixture question.
+ *
+ * Small enough to be cheap, but it cannot be answered without actually using the
+ * transport: the provider has to search, follow a call edge, read cached source, and
+ * resolve evidence. A model that cannot reach the server fails it rather than bluffing,
+ * which is what makes it a transport test.
+ */
+const TOOL_NAMES = [
+  "search_facts", "get_records", "get_source_chunks", "find_chunks",
+  "get_neighbors", "resolve_evidence", "validate_slice", "report_dispute",
+];
+
+const SLICE_ID = "transport-spike";
+
+const SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["repositoryName", "fileCount", "entrypointSymbol", "evidenceId", "toolsUsed"],
+  properties: {
+    repositoryName: { type: "string", description: "Repository name from the static resource." },
+    fileCount: { type: "integer", description: "Number of files in the inventory." },
+    entrypointSymbol: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "name", "path"],
+      properties: {
+        id: { type: "string" }, name: { type: "string" }, path: { type: "string" },
+      },
+      description: "Any one symbol found through search_facts.",
+    },
+    evidenceId: { type: "string", description: "An id returned by resolve_evidence." },
+    toolsUsed: { type: "array", items: { type: "string" } },
+  },
+};
+
+const SYSTEM_PROMPT = [
+  "You are running a transport compatibility check for ContextKit.",
+  "",
+  "The repository under analysis is NOT on this filesystem. Do not look for it; there is",
+  "nothing to find. Every fact must come from the `contextkit` MCP server.",
+  "",
+  "Return only the JSON object the schema describes. No prose, no code fences.",
+].join("\n");
+
+const PROMPT = [
+  "Using only the contextkit MCP server:",
+  "",
+  "1. Read the resource `contextkit://runs/" + summary.runId + "/static` for the repository name,",
+  "   and `contextkit://runs/" + summary.runId + "/inventory` for the file count.",
+  "2. Call search_facts to find any one declared symbol.",
+  "3. Call find_chunks for that symbol, then resolve_evidence on a chunk to obtain an evidence id.",
+  "4. Return the JSON object described by the schema, listing in toolsUsed the names of the",
+  "   tools you actually called.",
+].join("\n");
+
+function describeInvocation(providerName) {
+  const workspace = "<empty temp dir>";
+  const descriptor = mcpServerDescriptor(resolvedRunDir);
+  if (providerName === "claude") {
+    return [
+      `cwd: ${workspace}`,
+      `claude -p --strict-mcp-config --mcp-config <config> \\`,
+      `  --allowedTools ${TOOL_NAMES.map((t) => `mcp__contextkit__${t}`).join(",")} \\`,
+      "  --disallowedTools Read,Glob,Grep,Bash,Edit,Write,... \\",
+      "  --output-format json --json-schema <schema> <prompt>",
+      `mcp server: ${descriptor.command} ${descriptor.args.join(" ")}`,
+    ].join("\n  ");
+  }
+  return [
+    `cwd: ${workspace}`,
+    "codex --ask-for-approval never exec --sandbox read-only --skip-git-repo-check \\",
+    "  --cd <empty temp dir> --output-last-message <file> --output-schema <schema> \\",
+    "  -c mcp_servers.contextkit.command=... -c mcp_servers.contextkit.args=[...] -",
+    `mcp server: ${descriptor.command} ${descriptor.args.join(" ")}`,
+  ].join("\n  ");
+}
+
+const providers = [];
+if (which === "both" || which === "claude") providers.push(new ClaudeCliProvider({ model }));
+if (which === "both" || which === "codex") providers.push(new CodexCliProvider({ model }));
+
+process.stdout.write(`run ${summary.runId}  (${summary.repository}, ${summary.files} files, `
+  + `${summary.symbols} symbols)\n\n`);
+
+if (dryRun) {
+  for (const provider of providers) {
+    process.stdout.write(`### ${provider.name}\n  ${describeInvocation(provider.name)}\n\n`);
+  }
+  process.stdout.write("dry run: no provider was contacted.\n");
+  process.exit(0);
+}
+
+const results = [];
+for (const provider of providers) {
+  const version = await provider.available();
+  if (!version) {
+    process.stdout.write(`### ${provider.name}: NOT AVAILABLE on PATH\n\n`);
+    continue;
+  }
+  process.stdout.write(`### ${provider.name} (${version})\n`);
+  // The sandbox sits outside the run directory on purpose - see createProviderSandbox.
+  const sandbox = workspace.createProviderSandbox(provider.name);
+  try {
+    const outcome = await provider.analyzeSlice({
+      sliceId: SLICE_ID,
+      prompt: PROMPT,
+      systemPrompt: SYSTEM_PROMPT,
+      schema: SCHEMA,
+      runDir: resolvedRunDir,
+      toolNames: TOOL_NAMES,
+      workDir: sandbox,
+    });
+    results.push(outcome);
+    workspace.writeSliceArtifact(1, SLICE_ID, provider.name, "request", {
+      sliceId: SLICE_ID, provider: provider.name, model, runId: summary.runId,
+      systemPrompt: SYSTEM_PROMPT, prompt: PROMPT, schema: SCHEMA, toolNames: TOOL_NAMES,
+    });
+    const responsePath = workspace.writeSliceArtifact(1, SLICE_ID, provider.name, "response", outcome);
+    process.stdout.write(`  returned structured result: ${outcome.ok}\n`);
+    process.stdout.write(`  duration: ${(outcome.durationMs / 1000).toFixed(1)}s\n`);
+    if (outcome.mcpReport) {
+      process.stdout.write(`  mcp calls: ${outcome.mcpReport.calls}, `
+        + `denied: ${outcome.mcpReport.denied}\n`);
+    } else {
+      process.stdout.write("  mcp calls: (no access log written - server may not have been reached)\n");
+    }
+    if (outcome.result) {
+      process.stdout.write(`  ${JSON.stringify(outcome.result)}\n`);
+    }
+    process.stdout.write(`  response:   ${path.relative(process.cwd(), responsePath)}\n`);
+    process.stdout.write(`  sandbox:    ${sandbox} (empty, outside the run directory)\n\n`);
+  } catch (error) {
+    process.stdout.write(`  FAILED: ${error.message}\n`);
+    if (error.stderr) process.stdout.write(`  stderr: ${error.stderr.slice(-600)}\n`);
+    process.stdout.write("\n");
+  }
+}
+
+/** Everything the providers touched, in one place, per plan §6.2. */
+function writeReport() {
+  if (!results.length) return;
+  workspace.writeRunReport({
+    repository: summary.repository,
+    summary,
+    providers: results,
+  });
+  process.stdout.write(`### run directory: ${path.relative(process.cwd(), workspace.dir)}\n`);
+  for (const entry of workspace.describe()) {
+    process.stdout.write(`  ${String(entry.bytes).padStart(8)}  ${entry.path}\n`);
+  }
+  process.stdout.write("\n");
+}
+
+// ---------------------------------------------------------------- comparison
+
+if (results.length === 2) {
+  const [a, b] = results;
+  const checks = [
+    ["repositoryName", a.result?.repositoryName === b.result?.repositoryName],
+    ["fileCount", a.result?.fileCount === b.result?.fileCount],
+    ["both resolved evidence", Boolean(a.result?.evidenceId && b.result?.evidenceId)],
+    ["both reached the server", Boolean(a.mcpReport?.calls && b.mcpReport?.calls)],
+  ];
+  process.stdout.write("### comparison\n");
+  for (const [label, passed] of checks) {
+    process.stdout.write(`  ${passed ? "agree  " : "DIFFER "} ${label}\n`);
+  }
+
+  // Against the truth, not only against each other: two providers can agree and both be
+  // wrong, which would pass a same-answer check and prove nothing.
+  process.stdout.write("\n### against the artifact\n");
+  for (const outcome of results) {
+    const correctName = outcome.result?.repositoryName === summary.repository;
+    const correctCount = outcome.result?.fileCount === summary.files;
+    const realSymbol = Boolean(outcome.result?.entrypointSymbol?.id
+      && store.symbolsById.has(outcome.result.entrypointSymbol.id));
+    process.stdout.write(`  ${outcome.provider}: name ${correctName ? "ok" : "WRONG"}, `
+      + `count ${correctCount ? "ok" : "WRONG"}, symbol id ${realSymbol ? "real" : "NOT IN RUN"}\n`);
+  }
+
+  const agreed = checks.every(([, passed]) => passed);
+  writeReport();
+  process.exit(agreed ? 0 : 1);
+}
+
+writeReport();
+process.exit(results.length ? 0 : 1);
