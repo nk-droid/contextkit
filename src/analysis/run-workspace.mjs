@@ -169,9 +169,20 @@ export function ensureRunWorkspace(input, { workRoot = null, quiet = true } = {}
 
   const document = JSON.parse(fs.readFileSync(path.join(staging, "STATIC_ANALYSIS.json"), "utf8"));
   const destination = path.join(root, runIdFor(document.repository.treeFingerprint));
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.rmSync(destination, { recursive: true, force: true });
-  fs.renameSync(staging, destination);
+  fs.mkdirSync(destination, { recursive: true });
+
+  // Move the scan artifacts in without disturbing anything else.
+  //
+  // Replacing the directory wholesale would be simpler and is wrong: the run id is the
+  // tree fingerprint, so re-scanning an unchanged tree yields byte-identical artifacts -
+  // there is nothing to replace - while the directory also holds slice responses, entity
+  // registries, and run reports that took real time and money to produce. Deleting those
+  // to rewrite two files that did not change is pure loss.
+  for (const name of ["STATIC_ANALYSIS.json", "SOURCE_INDEX.jsonl"]) {
+    const from = path.join(staging, name);
+    if (fs.existsSync(from)) fs.renameSync(from, path.join(destination, name));
+  }
+  fs.rmSync(staging, { recursive: true, force: true });
 
   return { workspace: new RunWorkspace(destination), scanned: true };
 }
