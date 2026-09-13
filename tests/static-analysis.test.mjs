@@ -17,6 +17,7 @@ import { validateStaticDocument } from "../src/analysis/validation/validate-stat
 import { EvidenceRegistry } from "../src/analysis/evidence-registry.mjs";
 import { evidenceId, slug } from "../src/analysis/stable-ids.mjs";
 import { classifyKind, classifySensitivity, isSafeRelativePath } from "../src/analysis/policy.mjs";
+import { computeTreeFingerprint } from "../src/analysis/acquire-source.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 let fixture;
@@ -323,6 +324,48 @@ describe("cli", () => {
     assert.ok(fs.existsSync(path.join(outDir, "STATIC_ANALYSIS.json")));
     assert.ok(fs.existsSync(path.join(outDir, "SOURCE_INDEX.jsonl")));
     fs.rmSync(outDir, { recursive: true, force: true });
+  });
+});
+
+describe("tree fingerprint", () => {
+  // Run ids are derived from this digest, so its exact bytes are a compatibility
+  // surface. The NUL separators in particular are easy to retype as something
+  // printable; pinning a golden value makes that a failing test rather than a silent
+  // change to every run id in existence.
+  const entries = [
+    { path: "src/b.ts", executable: false, bytes: 120, sha256: "b".repeat(64) },
+    { path: "src/a.ts", executable: true, bytes: 40, sha256: "a".repeat(64) },
+    { path: "README.md", executable: false, bytes: 7, sha256: null },
+  ];
+
+  test("matches the pinned digest for a known entry set", () => {
+    assert.equal(
+      computeTreeFingerprint(entries),
+      "3bc1d2b3f07a41ef5db82694742b25090e409bc03ab5d275eb58f8a70120319e",
+    );
+  });
+
+  test("is independent of traversal order", () => {
+    assert.equal(computeTreeFingerprint([...entries].reverse()), computeTreeFingerprint(entries));
+  });
+
+  test("separates fields unambiguously", () => {
+    // Without a separator that cannot occur in a path, these two trees collide.
+    const a = [{ path: "a", executable: false, bytes: 1, sha256: "x" }];
+    const b = [{ path: "a 644", executable: false, bytes: 1, sha256: "x" }];
+    assert.notEqual(computeTreeFingerprint(a), computeTreeFingerprint(b));
+  });
+
+  test("responds to mode, size, and content changes", () => {
+    const base = computeTreeFingerprint(entries);
+    for (const mutate of [
+      (e) => ({ ...e, executable: !e.executable }),
+      (e) => ({ ...e, bytes: e.bytes + 1 }),
+      (e) => ({ ...e, sha256: "c".repeat(64) }),
+    ]) {
+      const changed = [mutate(entries[0]), ...entries.slice(1)];
+      assert.notEqual(computeTreeFingerprint(changed), base);
+    }
   });
 });
 
