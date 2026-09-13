@@ -453,6 +453,87 @@ describe("disputes", () => {
   });
 });
 
+describe("static-only exposure policy", () => {
+  // The settled policy: a provider receives STATIC_ANALYSIS.json facts and the short
+  // excerpts already carried by evidence records. The private source index is never
+  // loaded, so it cannot be served by mistake.
+  let staticOnly;
+
+  before(() => {
+    const { document } = scanRepository(fixture);
+    staticOnly = new ContextKitMcpServer(
+      new RunStore(JSON.parse(JSON.stringify(document)), [], { sourceIndexLoaded: false }));
+  });
+
+  test("the session reports holding no cached source", () => {
+    assert.equal(staticOnly.store.summary().sourceExposure, "static-only");
+    assert.equal(staticOnly.store.chunksById.size, 0);
+  });
+
+  test("chunk tools are not offered at all", () => {
+    const names = staticOnly.listTools().map((t) => t.name);
+    assert.ok(!names.includes("get_source_chunks"));
+    assert.ok(!names.includes("find_chunks"));
+    // A tool that can only deny wastes turns and reads as a malfunction.
+    assert.ok(names.includes("search_facts") && names.includes("get_records"));
+  });
+
+  test("calling them anyway is refused with the policy named", () => {
+    for (const [name, args] of [
+      ["get_source_chunks", { chunkIds: ["chunk.whatever"] }],
+      ["find_chunks", { path: "src/store.ts" }],
+    ]) {
+      const response = staticOnly.callTool(name, args);
+      assert.equal(response.ok, false);
+      assert.equal(response.error.code, "source-not-exposed");
+      assert.equal(response.error.detail.policy, "static-only");
+    }
+  });
+
+  test("resolve_evidence selects an existing record instead of cutting a new one", () => {
+    const existing = staticOnly.store.document.evidence.find((e) => e.excerpt);
+    const response = staticOnly.callTool("resolve_evidence", { evidenceId: existing.id });
+    assert.equal(response.ok, true);
+    assert.equal(response.result.id, existing.id);
+    assert.equal(response.result.excerpt, existing.excerpt);
+
+    // A chunk range is meaningless here and must not silently succeed.
+    const byRange = staticOnly.callTool("resolve_evidence", {
+      chunkId: "chunk.whatever", lineStart: 1, lineEnd: 2, detail: "something",
+    });
+    assert.equal(byRange.ok, false);
+    assert.equal(byRange.error.code, "source-not-exposed");
+  });
+
+  test("an invented evidence id is still refused", () => {
+    const response = staticOnly.callTool("resolve_evidence", { evidenceId: "ev.made.up.deadbeef" });
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "unknown-record");
+  });
+
+  test("no response carries a whole cached region", () => {
+    // The exposure the policy actually cares about: bounded excerpts, never file bodies.
+    const surfaces = [
+      staticOnly.readResource(`contextkit://runs/${staticOnly.runId}/code`),
+      staticOnly.readResource(`contextkit://runs/${staticOnly.runId}/inventory`),
+      staticOnly.callTool("search_facts", { query: "loadUser" }),
+    ];
+    for (const surface of surfaces) {
+      assert.ok(!JSON.stringify(surface).includes("chunk."),
+        "a chunk id leaked into a static-only response");
+    }
+    for (const record of staticOnly.store.document.evidence) {
+      if (record.excerpt) assert.ok(record.excerpt.length <= 500, "excerpts stay bounded");
+    }
+  });
+
+  test("cached-source mode still works, so the policy is a choice and not a rewrite", () => {
+    assert.equal(server.store.summary().sourceExposure, "cached-source");
+    const names = server.listTools().map((t) => t.name);
+    assert.ok(names.includes("get_source_chunks") && names.includes("find_chunks"));
+  });
+});
+
 describe("fake providers", () => {
   test("a cooperative provider completes a slice through the documented surface alone", () => {
     const fresh = new ContextKitMcpServer(store);

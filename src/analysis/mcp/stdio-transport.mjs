@@ -176,20 +176,34 @@ export class StdioTransport {
 
   instructions() {
     const summary = this.server.store.summary();
+    const staticOnly = summary.sourceExposure === "static-only";
     return [
       `You are analyzing a frozen snapshot of ${summary.repository} (run ${summary.runId}).`,
       "",
       "The repository is not on disk and no file tool will find it. Every fact comes from",
-      "this server: search_facts to discover ids, get_records and get_source_chunks to read,",
-      "get_neighbors to follow call edges.",
+      "this server: search_facts to discover ids, get_records to read them, get_neighbors",
+      "to follow call edges.",
       "",
-      "Claims with observed basis need an evidence id from resolve_evidence, which derives",
-      "the excerpt from cached content - you cannot write evidence yourself. Scanner-measured",
-      "values such as paths, hashes, line numbers, and call endpoints are protected: submit",
-      "only interpretation, and use report_dispute where you think a measurement is wrong.",
+      staticOnly
+        ? [
+          "This session serves static facts only. Cached source is NOT available: do not call",
+          "find_chunks or get_source_chunks, they will be refused. Ground observed claims by",
+          "citing an evidence id that already appears on a record's evidenceIds - each carries",
+          "a short verbatim excerpt and an exact location.",
+        ].join("\n")
+        : [
+          "Use find_chunks and get_source_chunks to read cached source, and resolve_evidence to",
+          "turn a range into a canonical evidence id. The excerpt is derived from cached content;",
+          "you cannot write evidence yourself.",
+        ].join("\n"),
+      "",
+      "Scanner-measured values such as paths, hashes, line numbers, and call endpoints are",
+      "protected: submit only interpretation, and use report_dispute where you think a",
+      "measurement is wrong.",
       "",
       `The snapshot holds ${summary.files} files, ${summary.symbols} symbols, and`,
-      `${summary.chunks} source chunks.`,
+      `${summary.evidence} evidence records`
+      + (staticOnly ? "." : `, with ${summary.chunks} source chunks.`),
     ].join("\n");
   }
 }
@@ -202,6 +216,7 @@ const HINTS = {
   "unknown-resource": "Call resources/list to see what exists.",
   "limit-exceeded": "Request fewer items per call.",
   "sensitive-content": "This region is redacted by policy; cite its location without the content.",
+  "source-not-exposed": "Cached source is not served in this session. Cite an existing evidence id from a record's evidenceIds.",
   "range-outside-chunk": "Request a range inside the chunk's own line bounds.",
   "bad-request": "Check the tool's input schema.",
 };

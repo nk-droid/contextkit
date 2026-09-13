@@ -170,6 +170,7 @@ export class ContextKitMcpServer {
    * its first turns trying to read files that are not there.
    */
   listTools() {
+    const staticOnly = !this.store.sourceIndexLoaded;
     const str = (description) => ({ type: "string", description });
     const strArray = (description) => ({ type: "array", items: { type: "string" }, description });
     return [
@@ -286,7 +287,25 @@ export class ContextKitMcpServer {
           required: ["targetId", "reason"],
         },
       },
-    ];
+    ].filter((tool) => {
+      // A tool that can only ever deny is worse than an absent one: the model spends
+      // turns discovering the refusal, and the refusal reads as a malfunction.
+      if (!staticOnly) return true;
+      return !["get_source_chunks", "find_chunks"].includes(tool.name);
+    }).map((tool) => {
+      if (!staticOnly || tool.name !== "resolve_evidence") return tool;
+      return {
+        ...tool,
+        description: "Select an existing evidence record by id. This session serves static "
+          + "facts only, so evidence cannot be cut from source: cite an id already present "
+          + "on a record's evidenceIds.",
+        inputSchema: {
+          type: "object",
+          properties: { evidenceId: str("Evidence id from a record's evidenceIds.") },
+          required: ["evidenceId"],
+        },
+      };
+    });
   }
 
   callTool(name, params = {}) {
@@ -378,6 +397,11 @@ export class ContextKitMcpServer {
       throw new AccessDenied("limit-exceeded",
         `at most ${this.limits.maxChunksPerCall} chunks per call`, { requested: chunkIds.length });
     }
+    if (!this.store.sourceIndexLoaded) {
+      throw new AccessDenied("source-not-exposed",
+        "this session serves static facts only; cached source is not available",
+        { policy: "static-only" });
+    }
     const chunks = [];
     const missing = [];
     for (const id of chunkIds) {
@@ -391,6 +415,11 @@ export class ContextKitMcpServer {
   }
 
   #findChunks({ path: relPath = null, symbolId = null, lineStart = null, lineEnd = null, roles = null, limit } = {}) {
+    if (!this.store.sourceIndexLoaded) {
+      throw new AccessDenied("source-not-exposed",
+        "this session serves static facts only; cached source is not available",
+        { policy: "static-only" });
+    }
     if (relPath !== null) assertNoHostPath(relPath, "path");
     if (symbolId !== null) assertKnownRecord(this.store, symbolId, "symbolId");
     const cap = clampLimit(limit, this.limits.maxChunksPerCall);
@@ -455,7 +484,24 @@ export class ContextKitMcpServer {
    * hash, or the id. Those come from cached content here, which is what stops a
    * provider inventing a citation.
    */
-  #resolveEvidence({ chunkId, lineStart, lineEnd, detail } = {}) {
+  #resolveEvidence({ chunkId, evidenceId: citedId, lineStart, lineEnd, detail } = {}) {
+    // Under the static-only policy there is no cached source to cut an excerpt from, so
+    // the model selects evidence the scanner already created rather than materializing
+    // a new range. The plan allows exactly this: "select or request evidence; never
+    // create raw locations".
+    if (!this.store.sourceIndexLoaded) {
+      if (!citedId) {
+        throw new AccessDenied("source-not-exposed",
+          "this session serves static facts only; cite an existing evidence id instead of a chunk range",
+          { policy: "static-only" });
+      }
+      const existing = this.store.evidenceById.get(citedId);
+      if (!existing) {
+        throw new AccessDenied("unknown-record", "no such evidence in this run", { evidenceId: citedId });
+      }
+      return redactEvidence(existing);
+    }
+
     assertNoHostPath(chunkId, "chunkId");
     const chunk = this.store.chunksById.get(chunkId);
     if (!chunk) throw new AccessDenied("unknown-record", "no such chunk in this run", { chunkId });

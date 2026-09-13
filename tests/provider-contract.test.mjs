@@ -21,6 +21,9 @@ import { CodexCliProvider } from "../src/analysis/providers/codex-cli.mjs";
 import {
   ProviderError, createIsolatedWorkspace, extractJson, mcpServerDescriptor, readAccessLog, run,
 } from "../src/analysis/providers/provider.mjs";
+import {
+  describeExposure, renderActualAccess, renderDisclosure,
+} from "../src/analysis/providers/disclosure.mjs";
 
 let bin;
 let workRoot;
@@ -157,6 +160,74 @@ describe("the provider is never granted the repository", () => {
     assert.ok(descriptor.args[0].endsWith("bin/contextkit-mcp-stdio"));
     assert.equal(descriptor.args[1], path.resolve("/tmp/some-run"));
     assert.ok(descriptor.args.includes("--log"));
+  });
+});
+
+describe("disclosure matches what is actually reachable", () => {
+  // A disclosure that overstates is alarming; one that understates is a lie about where
+  // source went. Both come from the same failure - the number and the policy being
+  // computed from different places - so the test ties them together.
+  const fakeStore = (sourceIndexLoaded, chunkCount) => ({
+    runId: "run_test",
+    sourceIndexLoaded,
+    chunksById: new Map(),
+    document: {
+      repository: { name: "fixture" },
+      inventory: { files: [{}, {}, {}] },
+      code: { symbols: [{}, {}], calls: [{}] },
+      detections: { routes: [{}] },
+      evidence: [
+        { excerpt: "x".repeat(100) },
+        { excerpt: "y".repeat(50) },
+        { excerpt: null, sensitive: true },
+      ],
+      sourceIndex: { chunkCount, includedBytes: 500_000 },
+    },
+  });
+
+  test("static-only reports the source index as withheld, not as reachable", () => {
+    const exposure = describeExposure(fakeStore(false, 490));
+    assert.equal(exposure.exposure, "static-only");
+    assert.equal(exposure.withheldChars, 500_000);
+
+    const text = renderDisclosure(exposure, { provider: "claude" });
+    assert.match(text, /policy\s+static-only/);
+    assert.match(text, /not reachable:[\s\S]*source index \(490 chunks/);
+    assert.ok(!/reachable by the provider:[\s\S]*cached source chunks/.test(text),
+      "cached chunks must not be listed as reachable under static-only");
+  });
+
+  test("cached-source lists the chunks as reachable", () => {
+    const exposure = describeExposure(fakeStore(true, 0));
+    assert.equal(exposure.exposure, "cached-source");
+    assert.equal(exposure.withheldChars, 0);
+    assert.match(renderDisclosure(exposure, { provider: "codex" }), /policy\s+cached-source/);
+  });
+
+  test("excerpt volume is counted, since that is the source that leaves", () => {
+    const exposure = describeExposure(fakeStore(false, 1));
+    assert.equal(exposure.excerpts, 2);
+    assert.equal(exposure.excerptChars, 150);
+    assert.equal(exposure.redactedRecords, 1);
+    assert.match(renderDisclosure(exposure, { provider: "claude" }), /2 evidence excerpts/);
+  });
+
+  test("the actual-access report distinguishes silence from zero", () => {
+    assert.match(renderActualAccess(null), /no log written/);
+    assert.match(
+      renderActualAccess({ calls: 3, denied: 1, accessLog: [
+        { name: "search_facts" }, { name: "search_facts" }, { name: "get_records" }] }),
+      /3 calls, 1 denied[\s\S]*search_facts×2, get_records/);
+  });
+
+  test("the adapter launches the server with the exposure it was given", async () => {
+    const provider = new ClaudeCliProvider({ binary: path.join(bin, "claude-ok") });
+    await provider.analyzeSlice(request({ sourceExposure: "static-only" }));
+    const argv = argvOf("claude-ok");
+    const config = JSON.parse(fs.readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8"));
+    const serverArgs = config.mcpServers.contextkit.args;
+    assert.equal(serverArgs[serverArgs.indexOf("--source-exposure") + 1], "static-only",
+      "the disclosure describes this setting; the server must actually receive it");
   });
 });
 

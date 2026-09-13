@@ -23,10 +23,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RunStore } from "../src/analysis/mcp/run-store.mjs";
+import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
 import { ensureRunWorkspace } from "../src/analysis/run-workspace.mjs";
 import { ClaudeCliProvider } from "../src/analysis/providers/claude-cli.mjs";
 import { CodexCliProvider } from "../src/analysis/providers/codex-cli.mjs";
 import { mcpServerDescriptor } from "../src/analysis/providers/provider.mjs";
+import {
+  describeExposure, renderActualAccess, renderDisclosure,
+} from "../src/analysis/providers/disclosure.mjs";
 
 const args = process.argv.slice(2);
 let runDir = null;
@@ -34,15 +38,19 @@ let which = "both";
 let model = null;
 let dryRun = false;
 let outOverride = null;
+// One setting drives the store, the tool list, and the server the provider launches.
+// If they can disagree, the disclosure can lie about what is reachable.
+let sourceExposure = "static-only";
 
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--provider") which = args[++i];
   else if (args[i] === "--model") model = args[++i];
   else if (args[i] === "--dry-run") dryRun = true;
   else if (args[i] === "--out") outOverride = args[++i];
+  else if (args[i] === "--source-exposure") sourceExposure = args[++i];
   else if (args[i] === "-h" || args[i] === "--help") {
     process.stdout.write("usage: contextkit-spike <run-dir|repository> [--provider claude|codex|both] "
-      + "[--model <id>] [--out <dir>] [--dry-run]\n");
+      + "[--model <id>] [--out <dir>] [--source-exposure static-only|cached-source] [--dry-run]\n");
     process.exit(0);
   } else if (!args[i].startsWith("-")) runDir ??= args[i];
 }
@@ -62,7 +70,12 @@ try {
 }
 
 const resolvedRunDir = workspace.dir;
-const store = RunStore.fromDirectory(resolvedRunDir);
+if (!["static-only", "cached-source"].includes(sourceExposure)) {
+  process.stderr.write(`contextkit-spike: unknown --source-exposure ${sourceExposure}\n`);
+  process.exit(2);
+}
+const store = RunStore.fromDirectory(resolvedRunDir,
+  { includeSourceIndex: sourceExposure === "cached-source" });
 const summary = store.summary();
 
 /**
@@ -73,10 +86,7 @@ const summary = store.summary();
  * resolve evidence. A model that cannot reach the server fails it rather than bluffing,
  * which is what makes it a transport test.
  */
-const TOOL_NAMES = [
-  "search_facts", "get_records", "get_source_chunks", "find_chunks",
-  "get_neighbors", "resolve_evidence", "validate_slice", "report_dispute",
-];
+const TOOL_NAMES = new ContextKitMcpServer(store).listTools().map((t) => t.name);
 
 const SLICE_ID = "transport-spike";
 
@@ -123,7 +133,7 @@ const PROMPT = [
 
 function describeInvocation(providerName) {
   const workspace = "<empty temp dir>";
-  const descriptor = mcpServerDescriptor(resolvedRunDir);
+  const descriptor = mcpServerDescriptor(resolvedRunDir, { sourceExposure });
   if (providerName === "claude") {
     return [
       `cwd: ${workspace}`,
@@ -150,9 +160,12 @@ if (which === "both" || which === "codex") providers.push(new CodexCliProvider({
 process.stdout.write(`run ${summary.runId}  (${summary.repository}, ${summary.files} files, `
   + `${summary.symbols} symbols)\n\n`);
 
+const exposure = describeExposure(store);
+
 if (dryRun) {
   for (const provider of providers) {
     process.stdout.write(`### ${provider.name}\n  ${describeInvocation(provider.name)}\n\n`);
+    process.stdout.write(renderDisclosure(exposure, { provider: provider.name, model }));
   }
   process.stdout.write("dry run: no provider was contacted.\n");
   process.exit(0);
@@ -165,7 +178,8 @@ for (const provider of providers) {
     process.stdout.write(`### ${provider.name}: NOT AVAILABLE on PATH\n\n`);
     continue;
   }
-  process.stdout.write(`### ${provider.name} (${version})\n`);
+  process.stdout.write(`### ${provider.name} (${version})\n\n`);
+  process.stdout.write(renderDisclosure(exposure, { provider: provider.name, model }));
   // The sandbox sits outside the run directory on purpose - see createProviderSandbox.
   const sandbox = workspace.createProviderSandbox(provider.name);
   try {
@@ -177,6 +191,7 @@ for (const provider of providers) {
       runDir: resolvedRunDir,
       toolNames: TOOL_NAMES,
       workDir: sandbox,
+      sourceExposure,
     });
     results.push(outcome);
     workspace.writeSliceArtifact(1, SLICE_ID, provider.name, "request", {
@@ -186,12 +201,7 @@ for (const provider of providers) {
     const responsePath = workspace.writeSliceArtifact(1, SLICE_ID, provider.name, "response", outcome);
     process.stdout.write(`  returned structured result: ${outcome.ok}\n`);
     process.stdout.write(`  duration: ${(outcome.durationMs / 1000).toFixed(1)}s\n`);
-    if (outcome.mcpReport) {
-      process.stdout.write(`  mcp calls: ${outcome.mcpReport.calls}, `
-        + `denied: ${outcome.mcpReport.denied}\n`);
-    } else {
-      process.stdout.write("  mcp calls: (no access log written - server may not have been reached)\n");
-    }
+    process.stdout.write(renderActualAccess(outcome.mcpReport));
     if (outcome.result) {
       process.stdout.write(`  ${JSON.stringify(outcome.result)}\n`);
     }

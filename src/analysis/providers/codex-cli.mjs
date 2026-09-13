@@ -35,12 +35,13 @@ export class CodexCliProvider {
 
   async analyzeSlice(request) {
     const {
-      sliceId, prompt, systemPrompt = null, schema = null, runDir, workDir = null,
+      sliceId, prompt, systemPrompt = null, schema = null, runDir,
+      workDir = null, sourceExposure = "static-only",
     } = request;
 
     const workspace = workDir ?? createIsolatedWorkspace(`codex-${sliceId}`);
     const mcpLog = path.join(workspace, "mcp-access.json");
-    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog });
+    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure });
     const lastMessage = path.join(workspace, "last-message.txt");
 
     const args = [

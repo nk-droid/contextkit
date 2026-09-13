@@ -7,7 +7,11 @@
  * model meets is the one the tests exercise.
  *
  * Usage (as configured in an MCP client):
- *   contextkit-mcp-stdio <run-dir> [--log <file>]
+ *   contextkit-mcp-stdio <run-dir> [--log <file>] [--source-exposure static-only|cached-source]
+ *
+ * Exposure defaults to static-only: the provider receives STATIC_ANALYSIS.json facts and
+ * the short excerpts already carried by evidence records, and the private source index is
+ * never read. Pass cached-source only where sending whole cached regions is acceptable.
  *
  * stdout carries the protocol. Diagnostics go to stderr - note that a host such as
  * Claude Code captures that stream into its own logs rather than passing it through, so
@@ -23,9 +27,12 @@ import { StdioTransport } from "../src/analysis/mcp/stdio-transport.mjs";
 const args = process.argv.slice(2);
 let runDir = null;
 let logPath = null;
+// Default per the settled retention policy: providers receive static facts only.
+let includeSourceIndex = false;
 
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--log") logPath = args[++i];
+  else if (args[i] === "--source-exposure") includeSourceIndex = args[++i] === "cached-source";
   else if (!args[i].startsWith("-")) runDir ??= args[i];
 }
 
@@ -53,15 +60,16 @@ if (logPath) {
 
 let server;
 try {
-  server = new ContextKitMcpServer(RunStore.fromDirectory(path.resolve(runDir)), {
-    onAccess: appendAccess,
-  });
+  server = new ContextKitMcpServer(
+    RunStore.fromDirectory(path.resolve(runDir), { includeSourceIndex }),
+    { onAccess: appendAccess });
 } catch (error) {
   process.stderr.write(`contextkit-mcp-stdio: cannot load run from ${runDir}: ${error.message}\n`);
   process.exit(2);
 }
 
-process.stderr.write(`contextkit-mcp-stdio: serving ${server.runId} from ${runDir}\n`);
+process.stderr.write(`contextkit-mcp-stdio: serving ${server.runId} from ${runDir} `
+  + `(${server.store.summary().sourceExposure})\n`);
 
 function writeSummary() {
   if (!logPath) return;

@@ -27,10 +27,13 @@ function deepFreeze(value) {
 }
 
 export class RunStore {
-  constructor(document, chunks, { loadedFrom = null } = {}) {
+  constructor(document, chunks, { loadedFrom = null, sourceIndexLoaded = null } = {}) {
     this.document = deepFreeze(document);
     this.runId = `run_${shortHash(document.repository.treeFingerprint, 16)}`;
     this.loadedFrom = loadedFrom;
+    // Whether this session holds cached source at all. Null means "not stated", which
+    // callers read as: it holds whatever chunks it was given.
+    this.sourceIndexLoaded = sourceIndexLoaded ?? chunks.length > 0;
 
     // Chunks are handed out by reference too, so they are frozen individually. The
     // index arrays built below are ours and stay sortable.
@@ -78,14 +81,26 @@ export class RunStore {
     }
   }
 
-  static fromDirectory(dir) {
+  /**
+   * @param {string} dir
+   * @param {{includeSourceIndex?: boolean}} [options]
+   *   `includeSourceIndex: false` builds a store with no cached source at all. This is
+   *   how the static-only exposure policy is enforced: rather than filtering content out
+   *   of responses - which leaves the content in memory, one bug away from a caller -
+   *   the private index is simply never read. A server cannot serve what it does not
+   *   hold.
+   */
+  static fromDirectory(dir, { includeSourceIndex = true } = {}) {
     const staticPath = path.join(dir, "STATIC_ANALYSIS.json");
     const indexPath = path.join(dir, "SOURCE_INDEX.jsonl");
     const document = JSON.parse(fs.readFileSync(staticPath, "utf8"));
-    const chunks = fs.existsSync(indexPath)
+    const chunks = includeSourceIndex && fs.existsSync(indexPath)
       ? fs.readFileSync(indexPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
       : [];
-    return new RunStore(document, chunks, { loadedFrom: dir });
+    return new RunStore(document, chunks, {
+      loadedFrom: dir,
+      sourceIndexLoaded: includeSourceIndex && fs.existsSync(indexPath),
+    });
   }
 
   /** Chunks covering a line range, used to serve evidence from cache alone. */
@@ -107,6 +122,7 @@ export class RunStore {
       calls: d.code.calls.length,
       evidence: d.evidence.length,
       chunks: this.chunksById.size,
+      sourceExposure: this.sourceIndexLoaded ? "cached-source" : "static-only",
       scannedAt: d.scanner.completedAt,
     };
   }
