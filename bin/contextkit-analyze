@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+/**
+ * contextkit-analyze - run a semantic analysis slice against a frozen run.
+ *
+ * Usage:
+ *   contextkit-analyze <run-dir|repository> [--slice foundation]
+ *                      [--provider claude|codex] [--model <id>] [--out <dir>]
+ *                      [--source-exposure static-only|cached-source] [--dry-run]
+ *
+ * The result is validated before it is stored, and stored as a candidate either way -
+ * an invalid result is evidence about the prompt and is more useful kept than discarded.
+ * Nothing here writes to the static artifact.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { RunStore } from "../src/analysis/mcp/run-store.mjs";
+import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
+import { ensureRunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { buildProtectedSnapshot } from "../src/analysis/merge/protected-fields.mjs";
+import { ClaudeCliProvider } from "../src/analysis/providers/claude-cli.mjs";
+import { CodexCliProvider } from "../src/analysis/providers/codex-cli.mjs";
+import {
+  describeExposure, renderActualAccess, renderDisclosure,
+} from "../src/analysis/providers/disclosure.mjs";
+import * as foundation from "../src/analysis/slices/foundation.mjs";
+
+const SLICES = { foundation };
+
+const args = process.argv.slice(2);
+let target = null;
+let sliceName = "foundation";
+let providerName = "claude";
+let model = null;
+let outOverride = null;
+let sourceExposure = "static-only";
+let dryRun = false;
+
+for (let i = 0; i < args.length; i += 1) {
+  const arg = args[i];
+  if (arg === "--slice") sliceName = args[++i];
+  else if (arg === "--provider") providerName = args[++i];
+  else if (arg === "--model") model = args[++i];
+  else if (arg === "--out") outOverride = args[++i];
+  else if (arg === "--source-exposure") sourceExposure = args[++i];
+  else if (arg === "--dry-run") dryRun = true;
+  else if (arg === "-h" || arg === "--help") {
+    process.stdout.write("usage: contextkit-analyze <run-dir|repository> [--slice foundation] "
+      + "[--provider claude|codex] [--model <id>] [--out <dir>] [--dry-run]\n");
+    process.exit(0);
+  } else if (!arg.startsWith("-")) target ??= arg;
+}
+
+if (!target) {
+  process.stderr.write("usage: contextkit-analyze <run-dir|repository> [--slice foundation]\n");
+  process.exit(2);
+}
+const slice = SLICES[sliceName];
+if (!slice) {
+  process.stderr.write(`contextkit-analyze: unknown slice ${sliceName}; have ${Object.keys(SLICES)}\n`);
+  process.exit(2);
+}
+
+let workspace;
+try {
+  ({ workspace } = ensureRunWorkspace(target, { workRoot: outOverride }));
+} catch (error) {
+  process.stderr.write(`contextkit-analyze: ${error.message}\n`);
+  process.exit(2);
+}
+
+const store = RunStore.fromDirectory(workspace.dir,
+  { includeSourceIndex: sourceExposure === "cached-source" });
+const snapshot = buildProtectedSnapshot(store.document);
+const summary = store.summary();
+const { systemPrompt, prompt, briefing } = slice.buildPrompt(store);
+const schema = slice.loadSchema();
+const toolNames = new ContextKitMcpServer(store).listTools().map((t) => t.name);
+
+process.stdout.write(`slice ${slice.SLICE_ID}  prompts v${slice.PROMPT_SET_VERSION}\n`);
+process.stdout.write(`run ${summary.runId}  (${summary.repository}, ${summary.files} files)\n\n`);
+
+if (dryRun) {
+  process.stdout.write(renderDisclosure(describeExposure(store), { provider: providerName, model }));
+  const briefingBytes = Buffer.byteLength(JSON.stringify(briefing));
+  process.stdout.write([
+    "  briefing:",
+    `    ${briefing.directories.length} directories, ${briefing.keySymbols.length} key symbols,`,
+    `    ${briefing.technologies.length} technologies, ${briefing.routes.length} routes`,
+    `    ${(briefingBytes / 1024).toFixed(0)} KB of prompt`,
+    "",
+    `  tools offered: ${toolNames.join(", ")}`,
+    "",
+    "dry run: no provider was contacted.",
+    "",
+  ].join("\n"));
+  process.exit(0);
+}
+
+const provider = providerName === "codex"
+  ? new CodexCliProvider({ model, timeoutMs: 900_000 })
+  : new ClaudeCliProvider({ model, maxTurns: 60, timeoutMs: 900_000 });
+
+const version = await provider.available();
+if (!version) {
+  process.stderr.write(`contextkit-analyze: ${providerName} is not on PATH\n`);
+  process.exit(2);
+}
+process.stdout.write(`### ${providerName} (${version})\n\n`);
+process.stdout.write(renderDisclosure(describeExposure(store), { provider: providerName, model }));
+
+workspace.writeSliceArtifact(1, slice.SLICE_ID, providerName, "request", {
+  sliceId: slice.SLICE_ID, promptSetVersion: slice.PROMPT_SET_VERSION,
+  provider: providerName, model, runId: summary.runId, sourceExposure,
+  systemPrompt, prompt, schema, toolNames,
+});
+
+const sandbox = workspace.createProviderSandbox(providerName);
+let outcome;
+try {
+  outcome = await provider.analyzeSlice({
+    sliceId: slice.SLICE_ID, prompt, systemPrompt, schema,
+    runDir: workspace.dir, toolNames, workDir: sandbox, sourceExposure,
+  });
+} catch (error) {
+  process.stderr.write(`  FAILED: ${error.message}\n`);
+  if (error.stderr) process.stderr.write(`  stderr: ${error.stderr.slice(-800)}\n`);
+  process.exit(1);
+}
+
+process.stdout.write(renderActualAccess(outcome.mcpReport));
+process.stdout.write(`  duration: ${(outcome.durationMs / 1000).toFixed(1)}s\n`);
+
+// The candidate is stored whether or not it validates: an invalid result is the most
+// useful thing there is for fixing a prompt, and discarding it loses that.
+const responsePath = workspace.writeSliceArtifact(
+  1, slice.SLICE_ID, providerName, "response", {
+    ...outcome,
+    // Provenance, so this file cannot later be applied to a different scan.
+    boundTo: {
+      runId: summary.runId,
+      artifactId: snapshot.artifactId,
+      treeFingerprint: snapshot.treeFingerprint,
+      promptSetVersion: slice.PROMPT_SET_VERSION,
+    },
+  });
+
+if (!outcome.result) {
+  workspace.writeRunReport({ repository: summary.repository, summary, providers: [outcome] });
+  process.stdout.write("\n  no structured result was returned\n");
+  process.stdout.write(`  response: ${path.relative(process.cwd(), responsePath)}\n`);
+  process.exit(1);
+}
+
+// The run report is written whatever the outcome: what a provider was shown and what it
+// reached is the record that matters, and it matters most when the result was rejected.
+workspace.writeRunReport({
+  repository: summary.repository,
+  summary,
+  providers: [outcome],
+});
+
+const validation = slice.validateFoundation(outcome.result, snapshot, store);
+const validationPath = path.join(workspace.dir, `validation-${slice.SLICE_ID}.${providerName}.json`);
+fs.writeFileSync(validationPath, JSON.stringify(validation, null, 2));
+
+const r = outcome.result;
+process.stdout.write([
+  "",
+  `  components:      ${(r.components ?? []).length}`,
+  `  external systems: ${(r.externalSystems ?? []).length}`,
+  `  annotations:     ${(r.annotations ?? []).length}`,
+  `  unknowns:        ${(r.unknowns ?? []).length}`,
+  "",
+].join("\n"));
+
+if (!validation.valid) {
+  process.stdout.write(`  INVALID - ${validation.errors.length} violation(s):\n`);
+  for (const error of validation.errors.slice(0, 12)) {
+    process.stdout.write(`    ${error.code}: ${error.message}\n`);
+  }
+  if (validation.errors.length > 12) {
+    process.stdout.write(`    ... and ${validation.errors.length - 12} more\n`);
+  }
+  process.stdout.write(`\n  response:   ${path.relative(process.cwd(), responsePath)}\n`);
+  process.stdout.write(`  validation: ${path.relative(process.cwd(), validationPath)}\n`);
+  process.exit(1);
+}
+
+// Valid: freeze the entity registry that later slices will reference.
+const registry = slice.freezeEntityRegistry(outcome.result, { snapshot });
+const registryPath = path.join(workspace.dir, "ENTITY_REGISTRY.json");
+fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+
+process.stdout.write("  VALID\n\n");
+for (const component of registry.entities.filter((e) => e.kind === "component")) {
+  process.stdout.write(`    ${component.id.padEnd(34)} ${component.paths.length} path(s)\n`);
+}
+process.stdout.write(`\n  registry frozen: ${path.relative(process.cwd(), registryPath)}\n`);
+process.stdout.write(`  response:        ${path.relative(process.cwd(), responsePath)}\n`);
+process.stdout.write(`\n  run directory: ${path.relative(process.cwd(), workspace.dir)}\n`);
+for (const entry of workspace.describe()) {
+  process.stdout.write(`    ${String(entry.bytes).padStart(9)}  ${entry.path}\n`);
+}

@@ -1,0 +1,247 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://contextkit.dev/schemas/analysis-slices/foundation.schema.json",
+  "title": "Foundation slice result",
+  "description": "Interpretation only. Every scanner-measured value is protected and must be absent: supply meaning, never paths, hashes, line numbers, versions, or call endpoints.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project",
+    "components",
+    "externalSystems",
+    "annotations"
+  ],
+  "properties": {
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose",
+        "basis"
+      ],
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "description": "What this repository is for, in one or two sentences, as a reader new to it would need."
+        },
+        "audience": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Who operates or consumes this, when the repository says so."
+        },
+        "maturity": {
+          "type": "string",
+          "enum": [
+            "prototype",
+            "active",
+            "stable",
+            "maintenance",
+            "unknown"
+          ],
+          "description": "Use unknown unless the repository states or plainly shows otherwise."
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "description": "The parts a maintainer would name when describing the system. Group by responsibility, not by directory depth.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "responsibility",
+          "kind",
+          "paths",
+          "basis"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^component\\.[a-z0-9][a-z0-9._-]*$",
+            "description": "Stable id, e.g. component.api-server. Frozen after this slice; later slices reference it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "responsibility": {
+            "type": "string",
+            "description": "What it is responsible for. One sentence, specific to this system."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "service",
+              "library",
+              "cli",
+              "ui",
+              "worker",
+              "job",
+              "infrastructure",
+              "test-suite",
+              "documentation"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Repository-relative paths this component owns. Must exist in the inventory."
+          },
+          "basis": {
+            "$ref": "#/$defs/basis"
+          },
+          "evidenceIds": {
+            "$ref": "#/$defs/evidenceIds"
+          }
+        }
+      }
+    },
+    "externalSystems": {
+      "type": "array",
+      "description": "Systems this repository talks to but does not contain.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "integrationKind",
+          "basis"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^external\\.[a-z0-9][a-z0-9._-]*$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "integrationKind": {
+            "type": "string",
+            "enum": [
+              "http-api",
+              "database",
+              "queue",
+              "object-store",
+              "identity",
+              "observability",
+              "payment",
+              "vcs",
+              "other"
+            ]
+          },
+          "basis": {
+            "$ref": "#/$defs/basis"
+          },
+          "evidenceIds": {
+            "$ref": "#/$defs/evidenceIds"
+          }
+        }
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "description": "Enrichment joined onto existing static records by id. Fields may carry meaning only.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "targetId",
+          "basis",
+          "fields"
+        ],
+        "properties": {
+          "targetId": {
+            "type": "string",
+            "description": "Id of an existing record: a file path, symbol id, or detection id."
+          },
+          "basis": {
+            "$ref": "#/$defs/basis"
+          },
+          "evidenceIds": {
+            "$ref": "#/$defs/evidenceIds"
+          },
+          "fields": {
+            "type": "object",
+            "description": "Semantic fields only. Setting a scanner-measured field is rejected.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Things that looked wrong or contradictory while reading."
+    },
+    "unknowns": {
+      "type": "array",
+      "description": "Questions the available facts could not answer. Prefer an unknown to a guess.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "whyUnresolved"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "whyUnresolved": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "basis": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "documented",
+        "inferred"
+      ],
+      "description": "observed: backed by evidence ids. documented: the repository's own prose says so. inferred: your reasoning, and say so plainly."
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Evidence ids from this run. Required when basis is observed. You cannot author these."
+    }
+  }
+}

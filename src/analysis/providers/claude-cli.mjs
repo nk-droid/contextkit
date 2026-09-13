@@ -13,6 +13,7 @@ import {
   ProviderError, analysisResult, createIsolatedWorkspace, extractJson, mcpServerDescriptor,
   readAccessLog, run,
 } from "./provider.mjs";
+import { toClaudeSchema } from "../../../scripts/claude-schema.mjs";
 
 const TOOL_PREFIX = "mcp__contextkit__";
 
@@ -42,12 +43,13 @@ export class ClaudeCliProvider {
    */
   async analyzeSlice(request) {
     const {
-      sliceId, prompt, systemPrompt = null, schema = null, runDir, toolNames, workDir = null,
+      sliceId, prompt, systemPrompt = null, schema = null, runDir, toolNames,
+      workDir = null, sourceExposure = "static-only",
     } = request;
 
     const workspace = workDir ?? createIsolatedWorkspace(`claude-${sliceId}`);
     const mcpLog = path.join(workspace, "mcp-access.json");
-    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog });
+    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure });
     const configPath = path.join(workspace, "mcp-config.json");
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
@@ -66,7 +68,10 @@ export class ClaudeCliProvider {
     ];
     if (this.model) args.push("--model", this.model);
     if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
-    if (schema) args.push("--json-schema", JSON.stringify(schema));
+    // Claude compiles the schema with a strict validator that rejects $defs alongside a
+    // draft-07 $schema. Normalizing is provider-specific, so it happens here rather than
+    // in the schema, which stays portable.
+    if (schema) args.push("--json-schema", JSON.stringify(toClaudeSchema(schema)));
 
     const startedAt = Date.now();
     const outcome = await run(this.binary, [...args, prompt], {
