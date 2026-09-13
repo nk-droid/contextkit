@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contextkit.dev/schemas/static-analysis.schema.json",
+  "title": "ContextKit static analysis",
+  "description": "Scanner-owned observations for one repository snapshot. This is an internal diagnostic artifact, not the published facts document: it records only what tools can establish directly and contains no semantic interpretation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "artifactId", "scanner", "repository", "inspection",
+    "inventory", "code", "detections", "evidence", "sourceIndex", "diagnostics"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "artifactId": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]*$" },
+    "scanner": {
+      "type": "object",
+      "required": ["name", "version", "configurationFingerprint", "startedAt", "completedAt", "durationMs", "extractors"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "configurationFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "extractors": { "type": "array", "items": { "$ref": "#/$defs/extractorProvenance" } }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "required": ["id", "name", "sourceKind", "mode", "revisionKind", "treeFingerprint"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "sourceKind": { "type": "string" },
+        "mode": { "type": "string" },
+        "revision": { "type": ["string", "null"] },
+        "revisionKind": { "type": "string" },
+        "defaultBranch": { "type": ["string", "null"] },
+        "canonicalRemote": { "type": ["string", "null"] },
+        "dirty": { "type": ["boolean", "null"] },
+        "shallow": { "type": "boolean" },
+        "submodulesPresent": { "type": "boolean" },
+        "gitLfsPresent": { "type": "boolean" },
+        "treeFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Normalized digest over path, mode, size, and content hash for every considered file. Every later stage pins to this rather than to a branch or directory name."
+        }
+      }
+    },
+    "inspection": {
+      "type": "object",
+      "required": ["status", "mode", "exclusions", "limits", "statistics"],
+      "properties": {
+        "status": { "enum": ["complete", "partial", "failed"] },
+        "mode": { "type": "string" },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ruleId", "matchedCount"],
+            "properties": {
+              "ruleId": { "type": "string" },
+              "pattern": { "type": "string" },
+              "reason": { "type": "string" },
+              "source": { "type": "string" },
+              "matchedCount": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "limits": { "type": "array", "items": { "type": "object" } },
+        "statistics": { "type": "object" }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "required": ["files", "directories", "languages", "manifests"],
+      "properties": {
+        "files": { "type": "array", "items": { "$ref": "#/$defs/fileRecord" } },
+        "directories": {
+          "type": "array",
+          "description": "Derived from the file inventory so counts cannot drift from it.",
+          "items": { "type": "object" }
+        },
+        "languages": { "type": "array", "items": { "type": "object" } },
+        "manifests": { "type": "array", "items": { "$ref": "#/$defs/detectionRecord" } }
+      }
+    },
+    "code": {
+      "type": "object",
+      "required": ["extraction", "symbols", "calls", "imports"],
+      "properties": {
+        "extraction": {
+          "type": "object",
+          "required": ["performed", "methods", "discoveredSymbols", "discoveredCalls", "retainedSymbols", "retainedCalls", "retentionRule", "unresolvedCalls"],
+          "properties": {
+            "performed": { "type": "boolean" },
+            "methods": { "type": "array", "items": { "type": "object" } },
+            "discoveredSymbols": { "type": "integer", "minimum": 0 },
+            "discoveredCalls": { "type": "integer", "minimum": 0 },
+            "retainedSymbols": { "type": "integer", "minimum": 0 },
+            "retainedCalls": { "type": "integer", "minimum": 0 },
+            "retentionRule": { "type": "string" },
+            "unresolvedCalls": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Call sites with no safe target attribution. Retained as a count even though the edges are dropped, because it bounds how complete the call graph is."
+            }
+          }
+        },
+        "symbols": { "type": "array", "items": { "$ref": "#/$defs/symbolRecord" } },
+        "calls": { "type": "array", "items": { "$ref": "#/$defs/callRecord" } },
+        "imports": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "detections": {
+      "type": "object",
+      "description": "Typed detection collections. Typed records rather than a generic property bag, so a schema failure names the thing that is wrong.",
+      "required": [
+        "technologies", "dependencies", "entrypoints", "apiSurfaces", "dataContracts",
+        "dataStores", "dataEntities", "migrations", "prerequisites", "commands",
+        "configurationSources", "configurationKeys", "testSuites", "buildArtifacts",
+        "workflows", "deploymentTargets", "observability", "externalSystems"
+      ],
+      "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/detectionRecord" } }
+    },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRecord" } },
+    "sourceIndex": {
+      "type": "object",
+      "required": ["artifact", "sha256", "chunkCount", "includedBytes", "excludedSensitiveChunks"],
+      "properties": {
+        "artifact": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "chunkCount": { "type": "integer", "minimum": 0 },
+        "includedBytes": { "type": "integer", "minimum": 0 },
+        "excludedSensitiveChunks": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "required": ["warnings", "errors", "unsupportedLanguages", "unresolvedCalls"],
+      "properties": {
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "errors": { "type": "array", "items": { "type": "object" } },
+        "unsupportedLanguages": { "type": "array", "items": { "type": "string" } },
+        "unresolvedImports": { "type": "integer", "minimum": 0 },
+        "unresolvedCalls": { "type": "integer", "minimum": 0 },
+        "rejectedEvidence": { "type": "array", "items": { "type": "object" } },
+        "sourceIdentityChanged": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "extractorProvenance": {
+      "type": "object",
+      "description": "What an extractor considered, parsed, and emitted, so a scanner upgrade that changes results can be diagnosed.",
+      "required": ["name", "version", "exactness", "available", "filesConsidered", "filesParsed", "recordsEmitted"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "exactness": { "enum": ["exact", "heuristic", "mixed"] },
+        "supports": { "type": "array", "items": { "type": "string" } },
+        "available": { "type": "boolean" },
+        "unavailableReason": { "type": ["string", "null"] },
+        "filesConsidered": { "type": "integer", "minimum": 0 },
+        "filesParsed": { "type": "integer", "minimum": 0 },
+        "recordsEmitted": { "type": "integer", "minimum": 0 },
+        "parseFailureCount": { "type": "integer", "minimum": 0 },
+        "parseFailures": { "type": "array" },
+        "warnings": { "type": "array" },
+        "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "fileRecord": {
+      "type": "object",
+      "required": ["path", "kind", "bytes", "binary", "generated", "vendored", "inspectionDepth", "classification"],
+      "properties": {
+        "path": { "type": "string" },
+        "kind": { "type": "string" },
+        "language": { "type": ["string", "null"] },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "lineCount": { "type": ["integer", "null"], "minimum": 0 },
+        "sha256": { "type": ["string", "null"] },
+        "tracked": { "type": "boolean" },
+        "executable": { "type": "boolean" },
+        "binary": { "type": "boolean" },
+        "generated": { "type": "boolean" },
+        "vendored": { "type": "boolean" },
+        "ignored": { "type": "boolean" },
+        "inspectionDepth": { "enum": ["metadata-only", "skimmed", "partial", "full", "not-inspected"] },
+        "reasonNotInspected": { "type": ["string", "null"] },
+        "classification": {
+          "type": "object",
+          "description": "The rule id behind each classification, so any label can be explained.",
+          "required": ["kindRuleId", "languageRuleId", "generatedRuleId", "vendoredRuleId"]
+        }
+      }
+    },
+    "symbolRecord": {
+      "type": "object",
+      "required": ["id", "name", "qualifiedName", "kind", "path", "lineStart", "lineEnd", "detector"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]*$" },
+        "name": { "type": "string" },
+        "qualifiedName": { "type": "string" },
+        "kind": { "enum": ["module", "class", "function", "method", "property"] },
+        "path": { "type": "string" },
+        "lineStart": { "type": "integer", "minimum": 1 },
+        "lineEnd": { "type": "integer", "minimum": 1 },
+        "signature": { "type": ["string", "null"] },
+        "parentSymbolId": { "type": ["string", "null"] },
+        "exported": { "type": "boolean" },
+        "visibility": { "enum": ["public", "internal", "private"] },
+        "decorators": { "type": "array", "items": { "type": "string" } },
+        "isEntrypoint": { "type": "boolean" },
+        "language": { "type": "string" },
+        "detector": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "callRecord": {
+      "type": "object",
+      "required": ["id", "callerSymbolId", "calleeSymbolId", "callSiteLines", "resolution"],
+      "properties": {
+        "id": { "type": "string" },
+        "callerSymbolId": { "type": "string" },
+        "calleeSymbolId": { "type": "string" },
+        "callSiteLines": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "resolution": {
+          "enum": ["resolved", "heuristic"],
+          "description": "resolved: a semantic resolver identified an exact declaration. heuristic: syntax and naming suggest a target but dynamic behaviour remains. Unresolved candidates are counted in diagnostics, never retained as edges."
+        }
+      }
+    },
+    "detectionRecord": {
+      "type": "object",
+      "required": ["id", "detector", "confidence", "evidenceIds"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]*$" },
+        "detector": { "type": "string" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidenceRecord": {
+      "type": "object",
+      "required": ["id", "path", "sourceKind", "lineStart", "lineEnd", "detail", "verificationStatus", "sensitive"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._:-]*$" },
+        "path": { "type": "string" },
+        "sourceKind": { "type": "string" },
+        "lineStart": { "type": "integer", "minimum": 1 },
+        "lineEnd": { "type": "integer", "minimum": 1 },
+        "symbol": { "type": ["string", "null"] },
+        "detail": {
+          "type": "string",
+          "description": "States what the cited region declares, not what it means. Interpretation belongs to the analysis stage."
+        },
+        "excerpt": { "type": ["string", "null"], "maxLength": 500 },
+        "excerptSha256": { "type": ["string", "null"] },
+        "fileSha256": { "type": ["string", "null"] },
+        "sensitive": { "type": "boolean" },
+        "sensitiveRuleId": { "type": ["string", "null"] },
+        "verificationStatus": {
+          "const": "not-checked",
+          "description": "The scanner observes; it never verifies. Only a later verification stage may move this."
+        }
+      }
+    }
+  }
+}

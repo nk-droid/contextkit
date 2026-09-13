@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+/**
+ * contextkit-scan - deterministic static analysis of a repository snapshot.
+ *
+ * Usage:
+ *   contextkit-scan <repository-path> [--out <dir>] [--json] [--allow-untracked]
+ *
+ * Writes STATIC_ANALYSIS.json and the private SOURCE_INDEX.jsonl, prints a
+ * human-readable report, and exits non-zero when validation fails so the artifact
+ * can never be published by a pipeline that ignores the result.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { scanRepository } from "../src/analysis/scan-repository.mjs";
+import { validateStaticDocument } from "../src/analysis/validation/validate-static.mjs";
+import { renderStaticReport } from "../src/analysis/report.mjs";
+
+function parseArgs(argv) {
+  const args = { target: null, out: null, json: false, allowUntracked: false, quiet: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--out") args.out = argv[++i];
+    else if (arg === "--json") args.json = true;
+    else if (arg === "--allow-untracked") args.allowUntracked = true;
+    else if (arg === "--quiet") args.quiet = true;
+    else if (arg === "-h" || arg === "--help") args.help = true;
+    else if (!arg.startsWith("-")) args.target ??= arg;
+    else {
+      process.stderr.write(`unknown option: ${arg}\n`);
+      process.exit(2);
+    }
+  }
+  return args;
+}
+
+const args = parseArgs(process.argv.slice(2));
+
+if (args.help || !args.target) {
+  process.stdout.write([
+    "Usage: contextkit-scan <repository-path> [options]",
+    "",
+    "Options:",
+    "  --out <dir>          Write artifacts to <dir> (default: ./context-packs/<name>/static)",
+    "  --json               Print the static document to stdout instead of the report",
+    "  --allow-untracked    Include untracked files that are not ignored",
+    "  --quiet              Suppress the report",
+    "",
+    "Produces STATIC_ANALYSIS.json plus the private SOURCE_INDEX.jsonl.",
+    "Exits 1 when the artifact fails validation.",
+    "",
+  ].join("\n"));
+  process.exit(args.help ? 0 : 2);
+}
+
+let result;
+try {
+  result = scanRepository(args.target, { allowUntracked: args.allowUntracked });
+} catch (error) {
+  process.stderr.write(`scan failed: ${error.message}\n`);
+  process.exit(1);
+}
+
+const { document, sourceIndex } = result;
+const validation = validateStaticDocument(document);
+
+const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const outDir = args.out
+  ? path.resolve(args.out)
+  : path.join(repoRoot, "context-packs", document.repository.name, "static");
+fs.mkdirSync(outDir, { recursive: true });
+
+const staticPath = path.join(outDir, "STATIC_ANALYSIS.json");
+const indexPath = path.join(outDir, "SOURCE_INDEX.jsonl");
+fs.writeFileSync(staticPath, JSON.stringify(document, null, 2));
+fs.writeFileSync(indexPath, sourceIndex.jsonl);
+
+if (args.json) {
+  process.stdout.write(JSON.stringify(document, null, 2) + "\n");
+} else if (!args.quiet) {
+  process.stdout.write(renderStaticReport(document, validation) + "\n");
+  process.stdout.write(`\nwrote ${path.relative(process.cwd(), staticPath)}\n`);
+  process.stdout.write(`wrote ${path.relative(process.cwd(), indexPath)}  (private analysis input)\n`);
+}
+
+if (!validation.valid) {
+  process.stderr.write(`\nstatic analysis failed validation with ${validation.errors.length} error(s)\n`);
+  process.exit(1);
+}
