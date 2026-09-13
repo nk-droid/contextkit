@@ -17,8 +17,8 @@ import { RunStore } from "../src/analysis/mcp/run-store.mjs";
 import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
 import { LIMITS, applyResponseBudget } from "../src/analysis/mcp/access-policy.mjs";
 import {
-  CooperativeProvider, FabricatingProvider, GreedyProvider, PathProbingProvider,
-  SelfCertifyingProvider,
+  CooperativeProvider, FabricatingProvider, GreedyProvider, OverwritingProvider,
+  PathProbingProvider, SelfCertifyingProvider,
 } from "../src/analysis/mcp/fake-provider.mjs";
 
 let fixture;
@@ -353,43 +353,86 @@ describe("evidence resolution", () => {
 });
 
 describe("slice validation", () => {
+  const target = () => store.document.code.symbols[0].id;
+  const codes = (r) => r.violations.map((v) => v.code);
+
   test("a candidate citing unknown evidence is rejected", () => {
     const response = server.callTool("validate_slice", {
       sliceId: "architecture",
-      candidate: { components: [{ name: "store", basis: "observed", evidenceIds: ["ev.nope"] }] },
+      candidate: {
+        annotations: [{
+          targetId: target(), basis: "observed", evidenceIds: ["ev.nope"],
+          fields: { summary: "s" },
+        }],
+      },
     }).result;
     assert.equal(response.valid, false);
-    assert.ok(response.errors.some((e) => e.includes("ev.nope")));
+    assert.ok(codes(response).includes("unresolved-evidence"));
   });
 
   test("an observed claim with no evidence is rejected", () => {
     const response = server.callTool("validate_slice", {
       sliceId: "architecture",
-      candidate: { components: [{ name: "store", basis: "observed", evidenceIds: [] }] },
+      candidate: {
+        annotations: [{ targetId: target(), basis: "observed", evidenceIds: [], fields: { summary: "s" } }],
+      },
     }).result;
     assert.equal(response.valid, false);
-    assert.ok(response.errors.some((e) => e.includes("observed basis")));
+    assert.ok(codes(response).includes("observed-without-evidence"));
   });
 
   test("a candidate may not mark its own claims verified", () => {
     const response = server.callTool("validate_slice", {
       sliceId: "architecture",
-      candidate: { components: [{ name: "store", verificationStatus: "verified" }] },
+      candidate: {
+        annotations: [{
+          targetId: target(), basis: "inferred", verificationStatus: "verified",
+          fields: { summary: "s" },
+        }],
+      },
     }).result;
     assert.equal(response.valid, false);
+    assert.ok(codes(response).includes("premature-verification"));
   });
 
-  test("a candidate grounded in resolved evidence is accepted", () => {
+  // The reason validate_slice delegates to the merge layer: a provider must not be able
+  // to get a protected field past the pre-flight check and have it die at assembly.
+  test("a candidate rewriting a measured fact is rejected here, not only at merge", () => {
+    const response = server.callTool("validate_slice", {
+      sliceId: "architecture",
+      candidate: {
+        annotations: [{ targetId: target(), basis: "inferred", fields: { lineStart: 1 } }],
+      },
+    }).result;
+    assert.equal(response.valid, false);
+    assert.ok(codes(response).includes("protected-field"));
+  });
+
+  test("evidence resolved this session counts as grounding", () => {
     const chunk = [...store.chunksById.values()].find((c) => !c.sensitive);
     const evidence = server.callTool("resolve_evidence", {
       chunkId: chunk.chunkId, detail: "declares the module", lineEnd: chunk.lineStart,
     }).result;
     const response = server.callTool("validate_slice", {
       sliceId: "runtime-flow",
-      candidate: { steps: [{ name: "load", basis: "observed", evidenceIds: [evidence.id] }] },
+      candidate: {
+        annotations: [{
+          targetId: target(), basis: "observed", evidenceIds: [evidence.id],
+          fields: { summary: "Loads a user." },
+        }],
+      },
     }).result;
-    assert.equal(response.valid, true, JSON.stringify(response.errors));
+    assert.equal(response.valid, true, JSON.stringify(response.violations));
     assert.ok(server.report().acceptedSlices.includes("runtime-flow"));
+  });
+
+  test("a slice bound to a different artifact is rejected", () => {
+    const response = server.callTool("validate_slice", {
+      sliceId: "architecture",
+      candidate: { artifactId: "artifact.elsewhere", annotations: [] },
+    }).result;
+    assert.equal(response.valid, false);
+    assert.ok(codes(response).includes("artifact-mismatch"));
   });
 });
 
@@ -423,8 +466,20 @@ describe("fake providers", () => {
     const fresh = new ContextKitMcpServer(store);
     const response = new FabricatingProvider().analyzeSlice(fresh);
     assert.equal(response.result.valid, false);
-    assert.ok(response.result.errors.some((e) => e.includes("unknown evidence")));
+    // Assert on the code, not the wording: the code is the contract a caller branches on.
+    assert.ok(response.result.violations.some((v) => v.code === "unresolved-evidence"),
+      JSON.stringify(response.result.violations));
     assert.equal(fresh.candidates.size, 0, "nothing entered the candidate area");
+  });
+
+  test("a provider cannot overwrite a measured fact", () => {
+    const fresh = new ContextKitMcpServer(store);
+    const response = new OverwritingProvider().analyzeSlice(fresh);
+    assert.equal(response.result.valid, false);
+    const fields = response.result.violations
+      .filter((v) => v.code === "protected-field").map((v) => v.field);
+    assert.deepEqual(fields.sort(), ["lineStart", "path"]);
+    assert.equal(fresh.candidates.size, 0);
   });
 
   test("a path-probing provider is denied on every attempt", () => {
@@ -489,7 +544,7 @@ describe("fake providers", () => {
     new CooperativeProvider({ query: "loadUser" }).analyzeSlice(fresh);
     const accepted = fresh.readResource(`contextkit://runs/${fresh.runId}/validation/architecture`).result;
     assert.equal(accepted.status, "accepted");
-    assert.ok(accepted.candidate.components.length > 0);
+    assert.ok(accepted.candidate.annotations.length > 0);
     assert.equal(accepted.lastResult.valid, true);
   });
 });

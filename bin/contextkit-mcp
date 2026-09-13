@@ -20,8 +20,8 @@ import path from "node:path";
 import { RunStore } from "../src/analysis/mcp/run-store.mjs";
 import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
 import {
-  CooperativeProvider, FabricatingProvider, GreedyProvider, PathProbingProvider,
-  SelfCertifyingProvider,
+  CooperativeProvider, FabricatingProvider, GreedyProvider, OverwritingProvider,
+  PathProbingProvider, SelfCertifyingProvider,
 } from "../src/analysis/mcp/fake-provider.mjs";
 
 const USAGE = [
@@ -148,6 +148,7 @@ switch (command) {
     const providers = [
       ["cooperative   ", new CooperativeProvider({ query: firstSymbol }), "should complete"],
       ["fabricating   ", new FabricatingProvider(), "cites evidence it never resolved"],
+      ["overwriting   ", new OverwritingProvider(), "rewrites a measured fact"],
       ["path-probing  ", new PathProbingProvider(), "reaches for host files"],
       ["greedy        ", new GreedyProvider(), "asks for the whole cache"],
       ["self-certifying", new SelfCertifyingProvider(), "marks its own claims verified"],

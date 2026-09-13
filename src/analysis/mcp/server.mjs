@@ -13,6 +13,7 @@ import {
   assertRunScope, clampLimit, redactChunk, redactEvidence,
 } from "./access-policy.mjs";
 import { evidenceId, sha256 } from "../stable-ids.mjs";
+import { buildProtectedSnapshot, validateAnnotations } from "../merge/protected-fields.mjs";
 
 const RESOURCE_PREFIX = "contextkit://runs/";
 
@@ -28,6 +29,8 @@ export class ContextKitMcpServer {
     this.requestedEvidence = new Map();
     this.candidates = new Map();
     this.validationResults = new Map();
+    // Taken at construction, before any provider runs: the values the assembler defends.
+    this.snapshot = buildProtectedSnapshot(store.document);
   }
 
   log(kind, name, params, outcome, detail) {
@@ -372,6 +375,12 @@ export class ContextKitMcpServer {
   /**
    * Candidate slice results go to an in-memory candidate area and are checked against
    * this run. They never touch the static artifact.
+   *
+   * The rules themselves live in the merge layer, not here. This is a pre-flight check
+   * a provider can call mid-analysis, and the merge is the gate that actually admits a
+   * slice - if the two held separate copies of the rules they would drift, and the
+   * drift would show up as a slice that passes here and is rejected at assembly, or
+   * worse, the reverse.
    */
   #validateSlice({ sliceId, candidate } = {}) {
     if (typeof sliceId !== "string" || !sliceId) {
@@ -380,39 +389,28 @@ export class ContextKitMcpServer {
     if (!candidate || typeof candidate !== "object") {
       throw new AccessDenied("bad-request", "candidate must be an object", {});
     }
-    const errors = [];
-    const known = (id) =>
-      this.store.recordsById.has(id) || this.store.evidenceById.has(id) || this.requestedEvidence.has(id);
 
-    const walk = (node, pathHint) => {
-      if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${pathHint}[${i}]`));
-      if (!node || typeof node !== "object") return;
-      for (const [key, value] of Object.entries(node)) {
-        if (key === "evidenceIds" && Array.isArray(value)) {
-          for (const id of value) {
-            if (!known(id)) errors.push(`${pathHint}.${key} references unknown evidence ${id}`);
-          }
-        } else if (/(^|[A-Za-z])(entityIds|symbolIds|relatedIds)$/.test(key) && Array.isArray(value)) {
-          for (const id of value) {
-            if (!known(id)) errors.push(`${pathHint}.${key} references unknown record ${id}`);
-          }
-        } else if (key === "basis" && value === "observed") {
-          const ids = node.evidenceIds;
-          if (!Array.isArray(ids) || !ids.length) {
-            errors.push(`${pathHint} claims observed basis without evidenceIds`);
-          }
-        } else if (key === "verificationStatus" && value !== "not-checked") {
-          errors.push(`${pathHint}.verificationStatus must remain not-checked in the analysis stage`);
-        } else {
-          walk(value, `${pathHint}.${key}`);
-        }
-      }
+    // Evidence the provider resolved this session is not in the static artifact yet, so
+    // the snapshot is extended with it for the duration of the check.
+    const snapshot = {
+      ...this.snapshot,
+      evidenceIds: new Set([...this.snapshot.evidenceIds, ...this.requestedEvidence.keys()]),
     };
-    walk(candidate, sliceId);
+    const slice = {
+      sliceId,
+      artifactId: candidate.artifactId ?? this.snapshot.artifactId,
+      treeFingerprint: candidate.treeFingerprint ?? this.snapshot.treeFingerprint,
+      annotations: candidate.annotations ?? [],
+      entities: candidate.entities ?? [],
+    };
+    const { valid, violations } = validateAnnotations(slice, snapshot);
 
-    const valid = errors.length === 0;
     if (valid) this.candidates.set(sliceId, candidate);
-    const result = { sliceId, valid, errors, acceptedAt: valid ? new Date().toISOString() : null };
+    const result = {
+      sliceId, valid, violations,
+      errors: violations.map((v) => v.message),
+      acceptedAt: valid ? new Date().toISOString() : null,
+    };
     this.validationResults.set(sliceId, result);
     return result;
   }

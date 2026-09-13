@@ -1,4 +1,4 @@
-.PHONY: help install demo graph-test scan scan-self test web-install web-dev web-build
+.PHONY: help install demo graph-test scan scan-self mcp mcp-probe test web-install web-dev web-build
 
 help:
 	@echo "ContextKit"
@@ -9,6 +9,8 @@ help:
 	@echo "  make graph-test Validate graph fixtures and rules"
 	@echo "  make scan REPO=<path>  Run static analysis on a repository"
 	@echo "  make scan-self Run static analysis on ContextKit itself"
+	@echo "  make mcp RUN=<dir> ARGS='<cmd>'  Inspect a run through the MCP layer"
+	@echo "  make mcp-probe RUN=<dir>  Check the access boundary with fake providers"
 	@echo "  make test      Run every test suite"
 	@echo "  make web-dev   Start the repository graph UI"
 	@echo "  make web-build Typecheck, lint, and build the graph UI"
@@ -34,6 +36,17 @@ scan:
 
 scan-self:
 	node bin/contextkit-scan . $(SCAN_ARGS)
+
+# Inspect a completed run exactly as a model provider would see it. Reads the frozen
+# artifacts only; the scanned repository is never consulted.
+mcp:
+	@test -n "$(RUN)" || (echo "usage: make mcp RUN=<run-dir> ARGS='summary'" && exit 2)
+	node bin/contextkit-mcp "$(RUN)" $(ARGS)
+
+# Exits non-zero if a hostile provider gets through or a cooperative one is blocked.
+mcp-probe:
+	@test -n "$(RUN)" || (echo "usage: make mcp-probe RUN=<run-dir>" && exit 2)
+	node bin/contextkit-mcp "$(RUN)" probe
 
 test:
 	node --test tests/*.test.mjs

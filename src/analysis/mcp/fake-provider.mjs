@@ -46,12 +46,16 @@ export class CooperativeProvider {
     }).result;
 
     const candidate = {
-      components: [{
-        name: symbol.record?.name ?? symbol.id,
+      annotations: [{
+        targetId: symbol.id,
         basis: "observed",
         evidenceIds: [evidence.id],
-        symbolIds: [symbol.id, ...neighbors.map((n) => n.to)],
+        fields: {
+          summary: `Declared in ${readable.path}; reached by ${neighbors.length} edge(s).`,
+          componentId: "component.core",
+        },
       }],
+      entities: [{ id: "component.core", name: "Core" }],
     };
     const result = call("validate_slice", { sliceId: this.sliceId, candidate }).result;
     return { transcript, submitted: candidate, result };
@@ -64,13 +68,35 @@ export class CooperativeProvider {
  */
 export class FabricatingProvider {
   analyzeSlice(server) {
+    const target = server.store.document.code.symbols[0]?.id ?? "sym.unknown";
     return server.callTool("validate_slice", {
       sliceId: "architecture",
       candidate: {
-        components: [{
-          name: "PaymentService",
+        annotations: [{
+          targetId: target,
           basis: "observed",
           evidenceIds: ["ev.src-payments.ts.declaration.deadbeef"],
+          fields: { summary: "Handles payments." },
+        }],
+      },
+    });
+  }
+}
+
+/**
+ * Tries to correct a measured fact - the classic failure where a model "fixes" a line
+ * number or a version it believes is wrong. Protected fields exist for exactly this.
+ */
+export class OverwritingProvider {
+  analyzeSlice(server) {
+    const symbol = server.store.document.code.symbols[0];
+    return server.callTool("validate_slice", {
+      sliceId: "architecture",
+      candidate: {
+        annotations: [{
+          targetId: symbol?.id ?? "sym.unknown",
+          basis: "inferred",
+          fields: { summary: "Entry point.", lineStart: 1, path: "src/somewhere-else.ts" },
         }],
       },
     });
@@ -107,10 +133,14 @@ export class GreedyProvider {
 /** Claims its own output is verified, skipping the verification stage entirely. */
 export class SelfCertifyingProvider {
   analyzeSlice(server) {
+    const target = server.store.document.code.symbols[0]?.id ?? "sym.unknown";
     return server.callTool("validate_slice", {
       sliceId: "architecture",
       candidate: {
-        components: [{ name: "Core", basis: "inferred", verificationStatus: "verified" }],
+        annotations: [{
+          targetId: target, basis: "inferred", verificationStatus: "verified",
+          fields: { summary: "Core." },
+        }],
       },
     });
   }
