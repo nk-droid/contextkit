@@ -109,6 +109,49 @@ function npmExtractor(ctx) {
   return { records: out, provenance: run.finish() };
 }
 
+/**
+ * The three places a pyproject declares dependencies, and nothing else.
+ *
+ * `[project].dependencies` is the runtime list; every key under
+ * `[project.optional-dependencies]` and `[dependency-groups]` is a named group. Keys
+ * anywhere else are not dependencies however much they look like one, which is why this
+ * tracks the section header rather than scanning for arrays.
+ *
+ * Yields `{ group, body }`, where `group` is null for the runtime list and the raw array
+ * text is left for the caller to pick requirement strings out of.
+ */
+function* dependencyArrays(text) {
+  const lines = text.split("\n");
+  let section = "";
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const header = /^\s*\[\s*([^\]]+?)\s*\]\s*$/.exec(lines[i]);
+    if (header) { section = header[1]; continue; }
+
+    const assignment = /^\s*["']?([A-Za-z0-9_.-]+)["']?\s*=\s*\[(.*)$/.exec(lines[i]);
+    if (!assignment) continue;
+
+    const [, key, rest] = assignment;
+    const isRuntime = section === "project" && key === "dependencies";
+    const isGroup = section === "project.optional-dependencies" || section === "dependency-groups";
+    if (!isRuntime && !isGroup) continue;
+
+    let body = rest;
+    if (!rest.includes("]")) {
+      // Multi-line: collect through the closing bracket.
+      const parts = [rest];
+      let j = i + 1;
+      for (; j < lines.length && !/^\s*\]/.test(lines[j]); j += 1) parts.push(lines[j]);
+      body = parts.join("\n");
+      i = j;
+    } else {
+      body = rest.slice(0, rest.lastIndexOf("]"));
+    }
+
+    yield { group: isRuntime ? null : key, body };
+  }
+}
+
 /** pyproject.toml and requirements files. Parsed with a narrow TOML reader, not a regex sweep. */
 function pythonExtractor(ctx) {
   const run = new ExtractorRun({
@@ -144,23 +187,29 @@ function pythonExtractor(ctx) {
         });
         run.emitted();
       }
-      // dependency arrays: [project].dependencies and [project.optional-dependencies].*
-      for (const block of text.matchAll(/^\s*(?:([a-zA-Z0-9_-]+)\s*=\s*)?\[\s*$([\s\S]*?)^\s*\]/gm)) {
-        const body = block[2] ?? "";
-        for (const dep of body.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)\s*([^"']*)["']/g)) {
+      // Dependency arrays, read with the TOML section in hand.
+      //
+      // Matching every array in the file is the tempting shortcut and it is wrong: a
+      // pyproject is full of arrays that are not dependencies, and `select = ["E4",
+      // "E7", "F"]` under [tool.ruff.lint] then arrives as three packages named after
+      // lint rules. So only the three locations that actually declare dependencies are
+      // read, and the section header decides which. Arrays may be inline or multi-line;
+      // both spellings are common.
+      for (const block of dependencyArrays(text)) {
+        for (const dep of block.body.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)\s*([^"']*)["']/g)) {
           const line = lineOf(text, dep[0]);
           out.dependencies.push({
-            id: detectionId("dep", relPath, block[1] ?? "runtime", dep[1]),
+            id: detectionId("dep", relPath, block.group ?? "runtime", dep[1]),
             detector: run.name, confidence: "high",
             evidenceIds: [line ? ctx.evidence.add({
               path: relPath, lineStart: line, lineEnd: line,
               detail: `declares the Python dependency ${dep[1]}`, sourceText: text, region: `dep-${dep[1]}`,
             }) : evidence].filter(Boolean),
             name: dep[1], ecosystem: "pypi",
-            kind: block[1] ? "optional" : "runtime",
+            kind: block.group ? "optional" : "runtime",
             // Which extra declared it, so "pytest in the dev extra" stays distinct
             // from the same package declared at runtime.
-            dependencyGroup: block[1] ?? null,
+            dependencyGroup: block.group ?? null,
             versionConstraint: dep[2].trim() || null, direct: true, sourcePath: relPath,
           });
           run.emitted();
