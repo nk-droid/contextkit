@@ -85,6 +85,7 @@ export function scanRepository(rootInput, options = {}) {
     limits,
     moduleImports: new Map(),
     lineCount: (p) => inventoryByPath.get(p)?.lineCount ?? null,
+    file: (p) => inventoryByPath.get(p) ?? null,
   };
 
   // 3. Manifests and ecosystem facts.

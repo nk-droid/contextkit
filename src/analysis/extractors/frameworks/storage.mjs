@@ -8,6 +8,7 @@
 import path from "node:path";
 import { detectionId } from "../../stable-ids.mjs";
 import { ExtractorRun } from "../extractor.mjs";
+import { buildCodeMask, firstMatchInCode, isAuthored, lineAt, matchesInCode } from "../source-text.mjs";
 
 const VERSION = "1.0.0";
 
@@ -43,12 +44,19 @@ export function detectStorage(ctx) {
 
   for (const [relPath, text] of ctx.contents) {
     const ext = path.extname(relPath);
+    // Signals found in comments or string literals are documentation, not usage - most
+    // visibly when a detector matches its own signal table.
+    const mask = buildCodeMask(text, relPath);
+    // Signal matching runs over authored files only; migrations below deliberately do
+    // not, since a generated migration is still a real fact.
+    const authored = isAuthored(ctx.file?.(relPath));
 
     for (const signal of STORE_SIGNALS) {
-      if (!signal.pattern.test(text)) continue;
+      if (!authored) break;
+      const match = firstMatchInCode(text, signal.pattern, mask);
+      if (!match) continue;
       run.consider();
-      const match = signal.pattern.exec(text) ?? { index: 0 };
-      const line = text.slice(0, match.index ?? 0).split("\n").length;
+      const line = lineAt(text, match.index);
       const evId = ctx.evidence.add({
         path: relPath, lineStart: line, lineEnd: line,
         detail: `references ${signal.technology}`,
@@ -69,10 +77,10 @@ export function detectStorage(ctx) {
     }
 
     for (const signal of ENTITY_SIGNALS) {
-      const pattern = new RegExp(signal.pattern.source, signal.pattern.flags);
-      for (const match of text.matchAll(pattern)) {
+      if (!authored) break;
+      for (const match of matchesInCode(text, signal.pattern, mask)) {
         run.consider();
-        const line = text.slice(0, match.index).split("\n").length;
+        const line = lineAt(text, match.index);
         const evId = ctx.evidence.add({
           path: relPath, lineStart: line, lineEnd: line,
           detail: `declares the ${signal.framework} entity ${match[1]}`,

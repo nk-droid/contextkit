@@ -9,6 +9,7 @@
 import path from "node:path";
 import { detectionId } from "../../stable-ids.mjs";
 import { ExtractorRun } from "../extractor.mjs";
+import { buildCodeMask, lineAt, matchesInCode } from "../source-text.mjs";
 
 const VERSION = "1.0.0";
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -87,15 +88,21 @@ function pythonDecoratorRoutes(ctx, symbols, run) {
   return routes;
 }
 
-/** Express-style registration: app.get("/path", handler). */
+/**
+ * Express-style registration: an `app.get("/path", handler)` call in executable code.
+ *
+ * Matches beginning inside a comment or a string literal are skipped - without that,
+ * this detector reports the example in the line above as a route.
+ */
 function expressRoutes(ctx, run) {
   const routes = [];
   for (const [relPath, text] of ctx.contents) {
     if (![".ts", ".js", ".mjs", ".tsx"].includes(path.extname(relPath))) continue;
+    const mask = buildCodeMask(text, relPath);
     const pattern = /\b(?:app|router)\.(get|post|put|patch|delete|all)\s*\(\s*["'`]([^"'`]+)["'`]/g;
-    for (const match of text.matchAll(pattern)) {
+    for (const match of matchesInCode(text, pattern, mask)) {
       run.consider();
-      const line = text.slice(0, match.index).split("\n").length;
+      const line = lineAt(text, match.index);
       const evId = ctx.evidence.add({
         path: relPath, lineStart: line, lineEnd: line,
         detail: `registers the ${match[1].toUpperCase()} route ${match[2]}`,

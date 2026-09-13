@@ -8,6 +8,7 @@
 import path from "node:path";
 import { detectionId } from "../../stable-ids.mjs";
 import { ExtractorRun } from "../extractor.mjs";
+import { buildCodeMask, firstMatchInCode, isAuthored, lineAt } from "../source-text.mjs";
 
 const VERSION = "1.0.0";
 
@@ -162,12 +163,14 @@ export function detectObservability(ctx) {
   });
   const found = new Map();
   for (const [relPath, text] of ctx.contents) {
+    // A signal name inside a comment or a string is a mention, not an initialization.
+    if (!isAuthored(ctx.file?.(relPath))) continue;
+    const mask = buildCodeMask(text, relPath);
     for (const signal of OBSERVABILITY_SIGNALS) {
-      const pattern = new RegExp(signal.pattern.source, signal.pattern.flags.replace("g", ""));
-      const match = pattern.exec(text);
+      const match = firstMatchInCode(text, signal.pattern, mask);
       if (!match) continue;
       run.consider();
-      const line = text.slice(0, match.index).split("\n").length;
+      const line = lineAt(text, match.index);
       const id = detectionId("obs", signal.name);
       if (!found.has(id)) {
         found.set(id, {
