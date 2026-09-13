@@ -19,6 +19,10 @@ import {
 import { runManifestExtractors } from "./extractors/manifests.mjs";
 import { extractTypeScript } from "./extractors/languages/typescript.mjs";
 import { extractPython } from "./extractors/languages/python.mjs";
+import { detectRoutes } from "./extractors/frameworks/routes.mjs";
+import { detectStorage } from "./extractors/frameworks/storage.mjs";
+import { detectConfiguration, detectObservability, detectTestSuites } from "./extractors/frameworks/testing.mjs";
+import { detectDataContracts, detectPlatform, rollUpTechnologies } from "./extractors/frameworks/platform.mjs";
 
 export const SCANNER_NAME = "contextkit-static";
 export const SCANNER_VERSION = "0.1.0";
@@ -131,10 +135,33 @@ export function scanRepository(rootInput, options = {}) {
     symbolsByPath.get(symbol.path).push(symbol);
   }
 
-  // 6. Private source index.
+  // 6. Framework detectors. These run after symbols exist so a route can be tied to
+  // the declaration that implements it.
+  const routeResult = detectRoutes(ctx, symbols);
+  const storageResult = detectStorage(ctx);
+  const testResult = detectTestSuites(ctx, files);
+  const configResult = detectConfiguration(ctx, files);
+  const obsResult = detectObservability(ctx);
+  const platformResult = detectPlatform(ctx, files);
+  const contractResult = detectDataContracts(ctx, symbols);
+  provenance.push(
+    routeResult.provenance, storageResult.provenance, testResult.provenance,
+    configResult.provenance, obsResult.provenance, platformResult.provenance,
+    contractResult.provenance,
+  );
+
+  const techResult = rollUpTechnologies(ctx, {
+    dependencies: manifestResult.detections.dependencies,
+    prerequisites: manifestResult.detections.prerequisites,
+    dataStores: storageResult.dataStores,
+    languages: summarizeLanguages(files),
+  });
+  provenance.push(techResult.provenance);
+
+  // 7. Private source index.
   const sourceIndex = buildSourceIndex({ files, contents, symbolsByPath }, limits);
 
-  // 7. Confirm the tree did not move while we were reading it.
+  // 8. Confirm the tree did not move while we were reading it.
   const recheck = recheckSourceIdentity(identity);
   if (recheck.changed) {
     warnings.push("Repository changed during the scan; this snapshot may not be coherent.");
@@ -221,28 +248,35 @@ export function scanRepository(rootInput, options = {}) {
         .sort((a, b) => (a.fromPath < b.fromPath ? -1 : a.fromPath > b.fromPath ? 1 : a.lineStart - b.lineStart)),
     },
     detections: {
-      technologies: manifestResult.detections.technologies,
+      technologies: [...manifestResult.detections.technologies, ...techResult.technologies]
+        .filter((r, i, all) => all.findIndex((x) => x.id === r.id) === i)
+        .sort(byId),
       dependencies: manifestResult.detections.dependencies,
       entrypoints: symbols.filter((s) => s.isEntrypoint).map((s) => ({
         id: `ep.${s.id}`, detector: s.detector, confidence: "medium",
         evidenceIds: s.evidenceIds ?? [], name: s.name, path: s.path,
         symbol: s.name, lineStart: s.lineStart,
       })),
-      apiSurfaces: [],
-      dataContracts: [],
-      dataStores: [],
-      dataEntities: [],
-      migrations: [],
+      apiSurfaces: routeResult.apiSurfaces,
+      routes: routeResult.routes,
+      dataContracts: contractResult.dataContracts,
+      dataStores: storageResult.dataStores,
+      dataEntities: storageResult.dataEntities,
+      migrations: storageResult.migrations,
       prerequisites: manifestResult.detections.prerequisites,
       commands: manifestResult.detections.commands,
-      configurationSources: [],
-      configurationKeys: [],
-      testSuites: [],
+      configurationSources: configResult.configurationSources,
+      configurationKeys: configResult.configurationKeys,
+      testSuites: testResult.testSuites,
       buildArtifacts: manifestResult.detections.buildArtifacts,
       workflows: manifestResult.detections.workflows,
-      deploymentTargets: manifestResult.detections.deploymentTargets,
-      observability: [],
-      externalSystems: manifestResult.detections.externalSystems,
+      deploymentTargets: [...manifestResult.detections.deploymentTargets, ...platformResult.deploymentTargets]
+        .filter((r, i, all) => all.findIndex((x) => x.id === r.id) === i)
+        .sort(byId),
+      observability: obsResult.observability,
+      externalSystems: [...manifestResult.detections.externalSystems, ...platformResult.externalSystems]
+        .filter((r, i, all) => all.findIndex((x) => x.id === r.id) === i)
+        .sort(byId),
     },
     evidence: evidence.all(),
     sourceIndex: sourceIndex.summary,

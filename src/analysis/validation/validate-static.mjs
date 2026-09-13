@@ -17,7 +17,7 @@ const DETECTION_COLLECTIONS = [
   "technologies", "dependencies", "entrypoints", "apiSurfaces", "dataContracts",
   "dataStores", "dataEntities", "migrations", "prerequisites", "commands",
   "configurationSources", "configurationKeys", "testSuites", "buildArtifacts",
-  "workflows", "deploymentTargets", "observability", "externalSystems",
+  "workflows", "deploymentTargets", "observability", "externalSystems", "routes",
 ];
 
 export function validateStaticDocument(doc) {

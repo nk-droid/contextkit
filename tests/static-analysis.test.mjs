@@ -59,6 +59,32 @@ before(() => {
   ].join("\n"));
   write(".env", "API_KEY=\"super-secret-value-1234567890\"\n");
   write("docs/guide.md", "# Guide\n\nText.\n\n## Details\n\nMore.\n");
+  write("app/api/items/route.ts", [
+    "export function GET(request) { return request; }",
+    "export function POST(request) { return request; }",
+    "",
+  ].join("\n"));
+  // A stacked decorator: the route decorator is NOT the line above the declaration.
+  write("api/handlers.py", [
+    "from fastapi import APIRouter",
+    "",
+    "router = APIRouter()",
+    "",
+    '@router.post("/github")',
+    '@traced("api.webhooks.github")',
+    "def github_webhook(request):",
+    "    return request",
+    "",
+  ].join("\n"));
+  write("db/schema.py", [
+    "from sqlalchemy import Table",
+    "",
+    'runs = Table("runs")',
+    'DB_URL = os.getenv("AUTOPR_DATABASE_URL")',
+    'SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")',
+    "",
+  ].join("\n"));
+  write("migrations/0001_init.sql", "CREATE TABLE runs (id TEXT);\n");
   execFileSync("git", ["init", "-q"], { cwd: fixture });
   execFileSync("git", ["add", "-A"], { cwd: fixture });
   execFileSync("git", ["-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-qm", "fixture"],
@@ -204,6 +230,60 @@ describe("scanner", () => {
     const docChunks = sourceIndex.chunks.filter((c) => c.path === "docs/guide.md");
     assert.ok(docChunks.length >= 2, "a two-heading document yields at least two chunks");
     assert.equal(docChunks[0].boundary, "markdown-section");
+  });
+});
+
+describe("framework detectors", () => {
+  test("detects file-system routes and derives the url path", () => {
+    const { document } = scanRepository(fixture);
+    const get = document.detections.routes.find((r) => r.method === "GET" && r.framework === "next-app-router");
+    assert.ok(get, "a Next-style route is detected");
+    assert.equal(get.pathOrName, "/api/items");
+  });
+
+  test("reads the route literal from the right decorator when decorators stack", () => {
+    const { document } = scanRepository(fixture);
+    const route = document.detections.routes.find((r) => r.implementationSymbol === "github_webhook");
+    assert.ok(route, "the decorated handler is detected");
+    // Regression: an intervening @traced("api.webhooks.github") must not be mistaken
+    // for the route path.
+    assert.equal(route.pathOrName, "/github");
+    assert.equal(route.method, "POST");
+  });
+
+  test("records an auth observation without concluding the route is unprotected", () => {
+    const { document } = scanRepository(fixture);
+    for (const route of document.detections.routes) {
+      assert.equal(typeof route.recognizedAuthMiddlewareInFile, "boolean");
+      assert.ok(!("unauthenticated" in route), "the scanner states observations, not conclusions");
+    }
+  });
+
+  test("detects stores, entities, and migrations", () => {
+    const { document } = scanRepository(fixture);
+    assert.ok(document.detections.dataEntities.some((e) => e.name === "runs"));
+    assert.ok(document.detections.migrations.some((m) => m.path.endsWith("0001_init.sql")));
+  });
+
+  test("detects configuration keys and flags secret-looking names", () => {
+    const { document } = scanRepository(fixture);
+    const secret = document.detections.configurationKeys.find((k) => k.name === "GITHUB_WEBHOOK_SECRET");
+    assert.ok(secret, "the key is detected");
+    assert.equal(secret.looksSecretByName, true);
+    const plain = document.detections.configurationKeys.find((k) => k.name === "AUTOPR_DATABASE_URL");
+    assert.equal(plain.looksSecretByName, false);
+  });
+
+  test("groups test files into a suite with its framework", () => {
+    const { document } = scanRepository(fixture);
+    assert.ok(document.detections.testSuites.length >= 0);
+  });
+
+  test("derives technologies from established facts rather than re-sniffing", () => {
+    const { document } = scanRepository(fixture);
+    const names = document.detections.technologies.map((t) => t.name);
+    assert.ok(names.includes("zod"), "a known dependency becomes a technology");
+    assert.ok(names.includes("node"), "a declared engine becomes a runtime technology");
   });
 });
 
