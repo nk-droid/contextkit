@@ -1,0 +1,192 @@
+#!/usr/bin/env node
+/**
+ * contextkit-mcp - inspect a frozen run through the MCP access layer.
+ *
+ * Every command here goes through the same server a provider would use, so what you
+ * see is exactly what a model would see - including the denials. There is no bypass
+ * path: if the inspector can reach it, a provider can, and vice versa.
+ *
+ * Usage:
+ *   contextkit-mcp <run-dir> summary
+ *   contextkit-mcp <run-dir> resources
+ *   contextkit-mcp <run-dir> read <uri-or-section>
+ *   contextkit-mcp <run-dir> tools
+ *   contextkit-mcp <run-dir> call <tool> '<json-params>'
+ *   contextkit-mcp <run-dir> probe
+ *
+ * A run directory is whatever contextkit-scan --out wrote.
+ */
+import path from "node:path";
+import { RunStore } from "../src/analysis/mcp/run-store.mjs";
+import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
+import {
+  CooperativeProvider, FabricatingProvider, GreedyProvider, PathProbingProvider,
+  SelfCertifyingProvider,
+} from "../src/analysis/mcp/fake-provider.mjs";
+
+const USAGE = [
+  "usage: contextkit-mcp <run-dir> <command> [args]",
+  "",
+  "commands:",
+  "  summary                 what this run contains",
+  "  resources               list readable resources",
+  "  read <uri|section>      read a resource ('static', or a full contextkit:// uri)",
+  "  tools                   list callable tools",
+  "  call <tool> '<json>'    call a tool with JSON params",
+  "  probe                   run the fake providers and show what was denied",
+  "",
+  "examples:",
+  "  contextkit-mcp ./run summary",
+  "  contextkit-mcp ./run read detections/routes",
+  `  contextkit-mcp ./run call search_facts '{"query":"route","limit":5}'`,
+  `  contextkit-mcp ./run call get_neighbors '{"id":"sym.…","depth":2}'`,
+  "",
+].join("\n");
+
+const [runDir, command, ...rest] = process.argv.slice(2);
+
+if (!runDir || !command || runDir === "-h" || runDir === "--help") {
+  process.stdout.write(USAGE);
+  process.exit(runDir ? 0 : 2);
+}
+
+let store;
+try {
+  store = RunStore.fromDirectory(path.resolve(runDir));
+} catch (error) {
+  process.stderr.write(`cannot load a run from ${runDir}: ${error.message}\n`);
+  process.stderr.write("expected STATIC_ANALYSIS.json (run contextkit-scan --out <dir> first)\n");
+  process.exit(2);
+}
+
+const server = new ContextKitMcpServer(store);
+const print = (value) => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+
+/** Denials are the interesting output here, so they print loudly and set the exit code. */
+function render(response) {
+  if (response.ok) {
+    print(response.result);
+    return 0;
+  }
+  process.stderr.write(`DENIED ${response.error.code}: ${response.error.message}\n`);
+  if (response.error.detail && Object.keys(response.error.detail).length) {
+    process.stderr.write(`${JSON.stringify(response.error.detail)}\n`);
+  }
+  return 1;
+}
+
+switch (command) {
+  case "summary": {
+    const s = store.summary();
+    process.stdout.write([
+      `run        ${s.runId}`,
+      `repository ${s.repository} @ ${String(s.revision).slice(0, 12)}`,
+      `scanned    ${s.scannedAt}`,
+      `files      ${s.files}`,
+      `symbols    ${s.symbols}  calls ${s.calls}`,
+      `evidence   ${s.evidence}  chunks ${s.chunks}`,
+      `sensitive  ${[...store.chunksById.values()].filter((c) => c.sensitive).length} chunks redacted`,
+      "",
+    ].join("\n"));
+    break;
+  }
+
+  case "resources": {
+    for (const resource of server.listResources()) {
+      process.stdout.write(`${resource.uri}\n    ${resource.description}\n`);
+    }
+    break;
+  }
+
+  case "read": {
+    const target = rest[0];
+    if (!target) {
+      process.stderr.write("read needs a uri or section name\n");
+      process.exit(2);
+    }
+    // Accept the short form so nobody has to paste an opaque run id by hand.
+    const uri = target.startsWith("contextkit://")
+      ? target
+      : `contextkit://runs/${store.runId}/${target.replace(/^\/+/, "")}`;
+    process.exit(render(server.readResource(uri)));
+  }
+
+  case "tools": {
+    for (const tool of server.listTools()) {
+      process.stdout.write(`${tool.name}\n    ${tool.description}\n`);
+    }
+    break;
+  }
+
+  case "call": {
+    const [name, raw] = rest;
+    if (!name) {
+      process.stderr.write("call needs a tool name\n");
+      process.exit(2);
+    }
+    let params = {};
+    if (raw) {
+      try {
+        params = JSON.parse(raw);
+      } catch (error) {
+        process.stderr.write(`params must be JSON: ${error.message}\n`);
+        process.exit(2);
+      }
+    }
+    process.exit(render(server.callTool(name, params)));
+  }
+
+  case "probe": {
+    // Drives the providers so the boundary can be checked by eye, not only in the test
+    // suite. Each gets its own server so one provider's log cannot be confused for
+    // another's.
+    //
+    // There are two distinct ways a provider is stopped, and they are easy to conflate:
+    // a call can be DENIED at the boundary, or a call can be allowed and its candidate
+    // REJECTED by validation. Both are reported, separately.
+    const firstSymbol = store.document.code.symbols[0]?.name ?? "";
+    const providers = [
+      ["cooperative   ", new CooperativeProvider({ query: firstSymbol }), "should complete"],
+      ["fabricating   ", new FabricatingProvider(), "cites evidence it never resolved"],
+      ["path-probing  ", new PathProbingProvider(), "reaches for host files"],
+      ["greedy        ", new GreedyProvider(), "asks for the whole cache"],
+      ["self-certifying", new SelfCertifyingProvider(), "marks its own claims verified"],
+    ];
+
+    let failures = 0;
+    for (const [name, provider, intent] of providers) {
+      const probeServer = new ContextKitMcpServer(store);
+      provider.analyzeSlice(probeServer, store);
+      const report = probeServer.report();
+      const rejected = [...probeServer.validationResults.values()].filter((r) => !r.valid);
+      const accepted = report.acceptedSlices;
+      const hostile = name.trim() !== "cooperative";
+
+      const verdict = hostile
+        ? (report.denied || rejected.length ? "stopped" : "NOT STOPPED")
+        : (accepted.length && !report.denied ? "completed" : "BLOCKED");
+      if (verdict === "NOT STOPPED" || verdict === "BLOCKED") failures += 1;
+
+      process.stdout.write(`${name}  ${verdict.padEnd(12)} ${intent}\n`);
+      process.stdout.write(
+        `                 ${report.calls} calls, ${report.denied} denied at the boundary, ` +
+        `${rejected.length} candidates rejected by validation\n`);
+      for (const entry of report.accessLog.filter((e) => e.outcome === "denied")) {
+        process.stdout.write(`                 DENIED  ${entry.name}  ${entry.detail}\n`);
+      }
+      for (const result of rejected) {
+        process.stdout.write(`                 REJECTED ${result.sliceId}: ${result.errors[0]}\n`);
+      }
+      if (accepted.length) {
+        process.stdout.write(`                 accepted ${accepted.join(", ")}` +
+          ` on ${report.requestedEvidence.length} resolved evidence record(s)\n`);
+      }
+      process.stdout.write("\n");
+    }
+    process.exit(failures ? 1 : 0);
+  }
+
+  default:
+    process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
+    process.exit(2);
+}
