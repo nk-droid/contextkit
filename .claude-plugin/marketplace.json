@@ -1,0 +1,11 @@
+{
+  "name": "contextkit",
+  "owner": { "name": "nk-droid" },
+  "plugins": [
+    {
+      "name": "contextkit",
+      "source": "./",
+      "description": "Evidence-grounded context documents, repository graphs, and component networks for any repository."
+    }
+  ]
+}

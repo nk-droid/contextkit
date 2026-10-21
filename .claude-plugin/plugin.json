@@ -1,0 +1,10 @@
+{
+  "name": "contextkit",
+  "description": "Evidence-grounded context documents, repository graphs, and component networks for any repository.",
+  "author": { "name": "nk-droid" },
+  "homepage": "https://github.com/nk-droid/contextkit",
+  "repository": "https://github.com/nk-droid/contextkit",
+  "license": "MIT",
+  "keywords": ["context", "documentation", "architecture", "onboarding", "code-review"],
+  "skills": ["./.agents/skills"]
+}

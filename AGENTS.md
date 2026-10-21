@@ -34,6 +34,7 @@ Write like a senior engineer onboarding another engineer:
 
 - `bin/` - CLIs. `contextkit` (`generate`, `network`) is the entry point; the others are pipeline stages and inspection tools.
 - `.agents/skills/` - agent skills, and the only home of the document and graph prompt text. `bin/contextkit` reads it; `.claude/skills/` links to it for Claude Code.
+- `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` - manifests that make the repository installable as the `contextkit` plugin in Claude Code and Codex.
 - `src/analysis/` - static scanner, extractors, MCP server, provider adapters, and semantic slices.
 - `prompts/analysis/` - prompts for the semantic slices in the network pipeline.
 - `src/network/` - assembles and validates `NETWORK_FACTS.json`.
@@ -44,7 +45,8 @@ Write like a senior engineer onboarding another engineer:
 
 ## Skills
 
-- `repo-context` writes the audience documents, `repo-graph` writes `REPO_GRAPH.json`, and `repo-network` drives the network pipeline for `NETWORK_FACTS.json`. All three are meant for use on other repositories, so `make install-skills` links them into user-level skill directories.
+- `repo-context` writes the audience documents, `repo-graph` writes `REPO_GRAPH.json`, and `repo-network` drives the network pipeline for `NETWORK_FACTS.json`. All three are meant for use on other repositories: users install them as the `contextkit` plugin, or link them from a checkout with `make install-skills`.
+- The repository is its own plugin marketplace. All four manifests use the name `contextkit` (the install id is `contextkit@contextkit`) and load `.agents/skills` in place, so there is nothing to copy. Keep `.codex-plugin/plugin.json` `version` equal to `package.json`, because Codex caches plugins by version; `make test` checks both rules.
 - `repo-network` carries no copy of the pipeline: its `scripts/contextkit` runs this checkout's `bin/` commands. Its agent mode is `contextkit-analyze --provider agent` (`--prepare`, then `--result`) with tool calls through `contextkit-mcp ... --provider agent --slice <id>`; the agent's prompt addendum is `prompts/analysis/agent-mode.md`, and the provider is `src/analysis/providers/agent.mjs`.
 - Edit skills under `.agents/skills/<name>/`. The `.claude/skills/` entries are symlinks.
 - Changing `repo-context/references/` or `repo-graph/references/graph-rules.md` also changes what `contextkit generate` sends to agents.

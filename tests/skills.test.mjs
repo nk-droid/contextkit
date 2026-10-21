@@ -63,6 +63,28 @@ test("every relative link in a skill resolves", () => {
   }
 });
 
+test("the Claude Code and Codex plugin manifests agree and load .agents/skills", () => {
+  const json = (file) => JSON.parse(readFileSync(join(projectRoot, file), "utf8"));
+  const claude = json(".claude-plugin/plugin.json");
+  const codex = json(".codex-plugin/plugin.json");
+  const claudeMarket = json(".claude-plugin/marketplace.json");
+  const codexMarket = json(".agents/plugins/marketplace.json");
+  // The documented install id is contextkit@contextkit, and the plugin name prefixes every skill.
+  for (const name of [codex.name, claudeMarket.name, codexMarket.name,
+    claudeMarket.plugins[0].name, codexMarket.plugins[0].name]) {
+    assert.equal(name, claude.name);
+  }
+  // Both marketplaces publish the repository root as the plugin.
+  assert.equal(claudeMarket.plugins[0].source, "./");
+  assert.equal(codexMarket.plugins[0].source.path, "./");
+  // Both plugins load the skills in place, so a plugin install and a checkout use the same files.
+  for (const dir of [...claude.skills, codex.skills]) {
+    assert.equal(realpathSync(join(projectRoot, dir)), realpathSync(skillsRoot));
+  }
+  // Codex caches plugins by version, so its manifest moves with the package version.
+  assert.equal(codex.version, json("package.json").version);
+});
+
 test("Claude Code sees every skill through a .claude/skills symlink", () => {
   for (const skill of skills) {
     const link = join(projectRoot, ".claude", "skills", skill);

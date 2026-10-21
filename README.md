@@ -39,39 +39,53 @@ The Bash CLI handles source resolution, temporary cloning, agent invocation, out
 
 ## Quick Start
 
+### In Claude Code or Codex
+
+Install ContextKit as a plugin; this repository is its own marketplace.
+
+```bash
+# Claude Code
+claude plugin marketplace add nk-droid/contextkit
+claude plugin install contextkit@contextkit
+
+# Codex
+codex plugin marketplace add nk-droid/contextkit
+codex plugin add contextkit@contextkit
+```
+
+Then, in a new session inside any repository, ask for what you need: "write a reviewer guide for this repo", "build the repository graph", or "generate the component network". The skills are namespaced, for example `/contextkit:repo-context reviewer` in Claude Code. Documents go to `~/context-packs/<repo-name>/` unless you name a directory. Graph validation and the component network need Node.js `>=22.13.0`. [Agent Skills](#agent-skills) covers each skill and how updates work.
+
+### From the command line
+
 Requirements:
 
 - Git and a Bash-compatible shell
-- Codex CLI installed and authenticated, or Claude Code, for Markdown/Atlas
-  generation and optional semantic network analysis
-- Node.js `>=22.13.0` for graph validation, network generation, and the web interface
-- Python 3 for Python symbol/call extraction (optional for other repositories)
-
-Install the CLI:
+- Node.js `>=22.13.0`
+- Codex CLI or Claude Code, installed and signed in, for document generation and semantic network analysis
+- Python 3 for Python symbol and call extraction (optional for other repositories)
 
 ```bash
 git clone https://github.com/nk-droid/contextkit.git
 cd contextkit
 make install
 export PATH="$PWD/bin:$PATH"
-```
 
-Generate a complete context pack:
-
-```bash
 contextkit generate https://github.com/owner/repository --all --with-graph
+contextkit network /path/to/repository
 ```
 
-By default, output goes to `./context-packs/<repo-slug>/` relative to the directory where you run the command.
+`generate` writes to `./context-packs/<repo-slug>/` relative to the directory where you run it. `network` needs no model account; see [Component Network](#component-network).
 
-Start the graph explorer:
+### View the results
+
+In a checkout:
 
 ```bash
 make web-install
 make web-dev
 ```
 
-Open the local URL printed by the development server and import the generated `REPO_GRAPH.json` file.
+Open the local URL printed by the development server, then import `REPO_GRAPH.json` on the main page or `NETWORK_FACTS.json` at `/network`.
 
 ## Example
 
@@ -138,23 +152,22 @@ Without `--all`, ContextKit generates the human overview by default. Select anot
 
 ## Agent Skills
 
-The same documents, graph, and component network are available as agent skills, so Claude Code, Codex, and other agents that support skills can produce them inside a session.
+The documents, graph, and component network are also agent skills, so Claude Code, Codex, and other agents that support skills can produce them inside a session.
 
 | Skill | Produces |
 |---|---|
 | `repo-context` | Any of the audience documents above, or a full pack with `INDEX.md` |
 | `repo-graph` | `REPO_GRAPH.json`, checked with the bundled validator before it is written |
-| `repo-network` | `NETWORK_FACTS.json` for `/network`, through this checkout's network pipeline: static, a headless provider, or the agent doing the semantic slices itself |
+| `repo-network` | `NETWORK_FACTS.json` for `/network`, through ContextKit's network pipeline: static, a headless provider, or the agent doing the semantic slices itself |
 
-`repo-context` and `repo-graph` are self-contained. `repo-network` runs this checkout's commands, so it needs `npm ci --ignore-scripts` here; it finds the checkout through its install link or `CONTEXTKIT_HOME`.
+`repo-context` is self-contained, and `repo-graph` needs only Node.js for its validator. `repo-network` runs ContextKit's own commands, so it needs this repository's dependencies; when they are missing, its script prints the `npm ci` command to run.
 
-The skills live in `.agents/skills/`, which Codex and most other agents read; `.claude/skills/` links to them for Claude Code. They work as-is inside this checkout. To use them on other repositories, link them into your user-level skill directories:
+Install the skills one way, not both, or every skill loads twice:
 
-```bash
-make install-skills   # links into ~/.claude/skills and ~/.agents/skills
-```
+- **As a plugin** (see [Quick Start](#in-claude-code-or-codex)). `.claude-plugin/` holds the Claude Code marketplace and manifest, and `.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json` hold the Codex ones. Both manifests load `.agents/skills/` in place. Skills are namespaced, as in `/contextkit:repo-context`. With the Claude Code plugin enabled, ContextKit's `bin/` commands are also on the PATH in sessions. Claude Code treats each commit as a new version: run `claude plugin update contextkit@contextkit`, or enable auto-update for the marketplace under `/plugin`. Codex caches the plugin by the version in `.codex-plugin/plugin.json`, which moves with `package.json`; refresh with `codex plugin marketplace upgrade`.
+- **From a checkout.** The skills live in `.agents/skills/`, which Codex and most other agents read; `.claude/skills/` links to them for Claude Code, so they work as-is inside this checkout. `make install-skills` links them into `~/.claude/skills` and `~/.agents/skills` for every repository, without the prefix: `/repo-context reviewer` in Claude Code, `$repo-context` in Codex. The links follow the checkout, so `git pull` updates them.
 
-Then ask an agent for something like "a reviewer guide for this repo", or invoke a skill directly: `/repo-context reviewer` in Claude Code, `$repo-context` in Codex. Output goes to `~/context-packs/<repo-name>/` unless you name a directory.
+Ask an agent for something like "a reviewer guide for this repo", or invoke a skill directly. Output goes to `~/context-packs/<repo-name>/` unless you name a directory.
 
 The CLI reads the same files. `contextkit generate` sends `repo-context/references/standards.md` and the audience guide to the agent, and `--with-graph` sends `repo-graph/references/graph-rules.md`, so prompt changes go in the skills. `repo-graph` also carries copies of `scripts/validate-graph.mjs` and `schemas/repo-graph.schema.json`; `make sync-skills` refreshes them, and `make test` fails if they drift.
 

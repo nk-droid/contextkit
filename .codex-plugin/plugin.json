@@ -1,0 +1,20 @@
+{
+  "name": "contextkit",
+  "version": "0.2.0",
+  "description": "Evidence-grounded context documents, repository graphs, and component networks for any repository.",
+  "author": { "name": "nk-droid" },
+  "skills": "./.agents/skills",
+  "interface": {
+    "displayName": "ContextKit",
+    "shortDescription": "Explain any repository with grounded context",
+    "longDescription": "Writes context documents for specific readers (overview, architecture, module guide, reviewer and contributor guides, AI-agent context, interview brief), builds a validated architecture graph, and produces a component network from a deterministic scan. Every claim cites repository files or is marked inferred, and output goes outside the analyzed repository.",
+    "developerName": "nk-droid",
+    "category": "Developer Tools",
+    "websiteURL": "https://github.com/nk-droid/contextkit",
+    "defaultPrompt": [
+      "Write a reviewer guide for this repository",
+      "Build a REPO_GRAPH.json for this repository",
+      "Generate the component network for this repository"
+    ]
+  }
+}
