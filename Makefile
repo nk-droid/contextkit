@@ -19,7 +19,7 @@ help:
 
 install:
 	npm ci --ignore-scripts
-	chmod +x bin/contextkit bin/contextkit-network bin/contextkit-export-network
+	chmod +x bin/contextkit bin/contextkit-network bin/contextkit-export-network bin/contextkit-view
 	@echo "Add this to your shell profile:"
 	@echo "export PATH=$$(pwd)/bin:\$$PATH"
 

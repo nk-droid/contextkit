@@ -65,6 +65,7 @@ bin/contextkit generate ~/work/private-repo --all
 bin/contextkit generate ~/work/private-repo --all --with-graph
 bin/contextkit generate ~/work/private-repo --audience reviewer --output ./context-packs/private-repo
 bin/contextkit network ~/work/private-repo
+bin/contextkit view ./context-packs/private-repo
 make scan REPO=~/work/private-repo
 make web-dev
 make install-skills

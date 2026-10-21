@@ -24,12 +24,18 @@ if [[ "$COMMAND" == "network" ]]; then
   exec node "$ROOT_DIR/bin/contextkit-network" "$@"
 fi
 
+if [[ "$COMMAND" == "view" ]]; then
+  shift
+  exec node "$ROOT_DIR/bin/contextkit-view" "$@"
+fi
+
 usage() {
   cat <<'EOF'
 ContextKit - generate repository context packs for humans and AI systems.
 
 Usage:
   contextkit network <local-repo|public-git-url|run-dir> [--provider static|claude|codex|agent] [--output <file>]
+  contextkit view <file|directory> [--port <n>] [--no-open]
   contextkit generate <github-url-or-local-path> [--audience <name>] [--all] [--with-graph] [--agent <codex|claude>] [--regenerate] [--output <dir>] [--model <model>] [--max-turns <n>] [--keep-clone]
   contextkit help
 

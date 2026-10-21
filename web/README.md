@@ -8,6 +8,8 @@ This React application imports validated `REPO_GRAPH.json` artifacts, stores the
 
 ## Quick Start
 
+From the repository root, `bin/contextkit view <file|directory>` installs these dependencies on first run, starts the server, imports a `REPO_GRAPH.json` or `NETWORK_FACTS.json`, and opens it. To run the server by hand:
+
 ```bash
 cd ..
 npm ci --ignore-scripts

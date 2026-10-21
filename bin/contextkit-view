@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+/**
+ * contextkit view - import ContextKit output into the local explorer and open it.
+ *
+ * Usage:
+ *   contextkit view <file|directory> [--port <n>] [--no-open]
+ *
+ * A REPO_GRAPH.json opens in the atlas (/) and a NETWORK_FACTS.json in the network view
+ * (/network). A directory imports the REPO_GRAPH.json and NETWORK_FACTS.json directly inside
+ * it. Files go through the explorer's own API, so they are validated exactly as an import
+ * from the page would be.
+ *
+ * An explorer already answering on the port is reused, and the command exits. Otherwise the
+ * explorer is started - after installing its dependencies on first run - and stays in the
+ * foreground until Ctrl+C. Its data lives in web/.wrangler/state on this machine.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const WEB = path.join(ROOT, "web");
+const NAMES = ["REPO_GRAPH.json", "NETWORK_FACTS.json"];
+const KINDS = {
+  graph: { label: "repository graph", endpoint: "/api/repositories", page: () => "/" },
+  facts: {
+    label: "network facts", endpoint: "/api/facts",
+    page: (id) => `/network?repo=${encodeURIComponent(id)}`,
+  },
+};
+
+// Set once Ctrl+C or another signal asks the explorer to stop, so its exit is not a failure.
+let stopping = false;
+
+const usage = `Usage: contextkit view <file|directory> [--port <n>] [--no-open]
+  --port <n>    Explorer port (default: 3000)
+  --no-open     Import and print the page URL without opening a browser
+
+Imports REPO_GRAPH.json into the atlas and NETWORK_FACTS.json into /network, starting
+the explorer when none is running on the port. A directory imports both files if present.
+`;
+
+function fail(message, code = 1) {
+  process.stderr.write(`contextkit view: ${message}\n`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const opts = { port: 3000, open: true, target: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "-h" || arg === "--help") {
+      process.stdout.write(usage);
+      process.exit(0);
+    } else if (arg === "--no-open") opts.open = false;
+    else if (arg === "--port") {
+      const port = Number(argv[++i]);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port needs a port number", 2);
+      opts.port = port;
+    } else if (!arg.startsWith("-") && !opts.target) opts.target = arg;
+    else fail(`unknown argument: ${arg}`, 2);
+  }
+  if (!opts.target) {
+    process.stderr.write(usage);
+    process.exit(2);
+  }
+  return opts;
+}
+
+/** The files to import, read once so the API receives exactly what is on disk. */
+function collect(target) {
+  const resolved = path.resolve(target);
+  if (!fs.existsSync(resolved)) fail(`no such file or directory: ${target}`, 2);
+  const files = fs.statSync(resolved).isDirectory()
+    ? NAMES.map((name) => path.join(resolved, name)).filter((file) => fs.existsSync(file))
+    : [resolved];
+  if (!files.length) fail(`${target} contains neither ${NAMES.join(" nor ")}`, 2);
+  return files.map((file) => {
+    const body = fs.readFileSync(file, "utf8");
+    let doc;
+    try {
+      doc = JSON.parse(body);
+    } catch (error) {
+      fail(`${file} is not valid JSON: ${error.message}`, 2);
+    }
+    const kind = Array.isArray(doc?.graphs) ? "graph" : doc?.architecture || doc?.code ? "facts" : null;
+    if (!kind) fail(`${file} is neither a repository graph nor a network facts document`, 2);
+    return { file, kind, body };
+  });
+}
+
+/** "ours" when the ContextKit explorer answers, "free" when nothing listens, "other" otherwise. */
+async function probe(base) {
+  try {
+    const response = await fetch(`${base}/api/repositories`, { signal: AbortSignal.timeout(10_000) });
+    const payload = await response.json().catch(() => null);
+    return Array.isArray(payload?.repositories) ? "ours" : "other";
+  } catch (error) {
+    return error?.cause?.code === "ECONNREFUSED" ? "free" : "other";
+  }
+}
+
+/** What `make web-install` installs, once. The explorer imports this checkout's network checks. */
+function ensureDependencies() {
+  const steps = [
+    !fs.existsSync(path.join(ROOT, "node_modules", "zod")) && { cwd: ROOT, args: ["ci", "--ignore-scripts"] },
+    !fs.existsSync(path.join(WEB, "node_modules", ".bin", "vinext")) && { cwd: WEB, args: ["ci"] },
+  ].filter(Boolean);
+  if (!steps.length) return;
+  process.stdout.write("Installing the explorer's dependencies (first run only)...\n");
+  for (const step of steps) {
+    const result = spawnSync("npm", step.args, { cwd: step.cwd, stdio: "inherit", shell: process.platform === "win32" });
+    if (result.status !== 0) fail(`npm ${step.args.join(" ")} failed in ${step.cwd}`);
+  }
+}
+
+function startExplorer(port) {
+  const logFile = path.join(os.tmpdir(), `contextkit-explorer-${port}.log`);
+  const log = fs.openSync(logFile, "w");
+  // Its own process group, so stopping it also stops the workerd runtime it spawns.
+  const child = spawn(path.join(WEB, "node_modules", ".bin", "vinext"),
+    ["dev", "--port", String(port), "--hostname", "127.0.0.1"],
+    { cwd: WEB, stdio: ["ignore", log, log], detached: true });
+  return { child, logFile };
+}
+
+function signalExplorer(server, signal) {
+  try {
+    process.kill(-server.child.pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stops the explorer and waits for it, so its port is free once this command returns. */
+async function stopExplorer(server) {
+  if (server.child.exitCode !== null || server.child.signalCode !== null) return;
+  const exited = new Promise((resolve) => server.child.once("exit", () => resolve(false)));
+  if (!signalExplorer(server, "SIGTERM")) return;
+  const timedOut = await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000, true))]);
+  if (timedOut) signalExplorer(server, "SIGKILL");
+}
+
+async function waitUntilReady(base, server, timeoutMs = 180_000) {
+  let exited = null;
+  server.child.once("exit", (code, signal) => { exited = code ?? signal; });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (exited !== null && stopping) await new Promise(() => {}); // the signal handler exits
+    if (exited !== null) fail(`the explorer stopped (${exited}) before it was ready; see ${server.logFile}`);
+    if (await probe(base) === "ours") return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  fail(`the explorer did not answer within ${timeoutMs / 1000} s; see ${server.logFile}`);
+}
+
+async function importFile(base, item) {
+  const kind = KINDS[item.kind];
+  const response = await fetch(`${base}${kind.endpoint}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: item.body,
+    signal: AbortSignal.timeout(120_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const issues = (payload.issues ?? []).map((issue) => `\n  ${issue.path || "(document)"}: ${issue.message}`).join("");
+    fail(`${item.file} was rejected: ${payload.error ?? `HTTP ${response.status}`}${issues}`);
+  }
+  process.stdout.write(`Imported the ${kind.label} from ${item.file}\n`);
+  return kind.page(payload.repositoryId);
+}
+
+function openBrowser(url) {
+  const [command, args] = process.platform === "darwin" ? ["open", [url]]
+    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
+  const child = spawn(command, args, { stdio: "ignore", detached: true });
+  child.on("error", () => process.stdout.write(`Open ${url} in your browser.\n`));
+  child.unref();
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const items = collect(opts.target);
+  // The API is called on IPv4 directly, so a localhost that resolves to ::1 first cannot
+  // make a running explorer look absent; the browser keeps the familiar localhost URL.
+  const base = `http://127.0.0.1:${opts.port}`;
+  const browserBase = `http://localhost:${opts.port}`;
+
+  let server = null;
+  const state = await probe(base);
+  if (state === "other") fail(`port ${opts.port} is used by something other than the ContextKit explorer; pass --port`, 2);
+  if (state === "free") {
+    ensureDependencies();
+    process.stdout.write(`Starting the explorer on port ${opts.port}...\n`);
+    server = startExplorer(opts.port);
+    // fail() exits synchronously, so on that path the explorer can only be told to stop.
+    process.on("exit", () => signalExplorer(server, "SIGTERM"));
+    const stop = async () => {
+      if (stopping) return;
+      stopping = true;
+      await stopExplorer(server);
+      process.exit(0);
+    };
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, stop);
+    await waitUntilReady(base, server);
+  }
+
+  const pages = [];
+  for (const item of items) pages.push(await importFile(base, item));
+  for (const page of new Set(pages)) {
+    const url = `${browserBase}${page}`;
+    process.stdout.write(`  ${url}\n`);
+    if (opts.open) openBrowser(url);
+  }
+
+  if (!server) return;
+  process.stdout.write(`\nThe explorer is running at ${browserBase} (log: ${server.logFile}). Press Ctrl+C to stop it.\n`);
+  server.child.once("exit", (code, signal) => {
+    if (!stopping) fail(`the explorer stopped (${code ?? signal}); see ${server.logFile}`);
+  });
+}
+
+main().catch((error) => fail(error.message));

@@ -78,14 +78,13 @@ contextkit network /path/to/repository
 
 ### View the results
 
-In a checkout:
+From a checkout, `contextkit view` imports a `REPO_GRAPH.json`, a `NETWORK_FACTS.json`, or a directory holding them into the local explorer and opens it:
 
 ```bash
-make web-install
-make web-dev
+contextkit view ~/context-packs/<repo-name>/
 ```
 
-Open the local URL printed by the development server, then import `REPO_GRAPH.json` on the main page or `NETWORK_FACTS.json` at `/network`.
+It starts the explorer when none is running and stays in the foreground until Ctrl+C; when one is already running on the port, it imports and exits. The first run installs the explorer's dependencies, which takes about 20 seconds. Imports stay on this machine in `web/.wrangler/state/`. To run the explorer yourself instead, use `make web-install` and `make web-dev`, then import files from its pages.
 
 ## Example
 
@@ -185,7 +184,7 @@ node scripts/validate-graph.mjs \
   /path/to/repository
 ```
 
-The React explorer supports:
+Open a graph with `contextkit view path/to/REPO_GRAPH.json`, which starts the explorer if needed. The React explorer supports:
 
 - multiple repositories and graph views
 - searchable nodes and paths
@@ -219,9 +218,9 @@ bin/contextkit network https://github.com/owner/repository.git
 bin/contextkit network /path/to/repository --output /path/to/NETWORK_FACTS.json
 ```
 
-The command prints the exact export and retained run paths. Import
-`NETWORK_FACTS.json` at `/network` after starting the UI with `make web-install`
-and `make web-dev`. No model account is needed for the default static mode.
+The command prints the exact export and retained run paths. Open the export with
+`contextkit view /path/to/NETWORK_FACTS.json`, or import it at `/network` after
+`make web-install` and `make web-dev`. No model account is needed for the default static mode.
 Components in this mode are explicitly **inferred directory groups**. Calls come
 from the scanner; they can include heuristic resolutions and are not a complete
 runtime call graph. Python extraction additionally requires Python 3.
@@ -282,6 +281,7 @@ ContextKit currently uses deterministic tests for the behavior it can verify aut
 - duplicate-identifier rejection
 - agent skill integrity and the CLI's use of the skill prompts
 - the agent provider: prepared prompts, logged calls, evidence resolved across separate commands, rejected and valid submissions, and export
+- `contextkit view` against a stand-in explorer: imports, page links, validation errors, and port detection
 
 Run the automated CLI, scanner, provider, validation, and network checks:
 

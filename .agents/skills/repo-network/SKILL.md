@@ -31,4 +31,4 @@ Static mode needs no model and usually finishes in seconds. Its components are d
 
 ## Report back
 
-Give the output path, the counts and warnings the command printed, and the run directory, which is needed to resume or re-export. The file loads at `/network` in the ContextKit explorer (`make web-dev` in the checkout).
+Give the output path, the counts and warnings the command printed, and the run directory, which is needed to resume or re-export. To view the network, the user can run `scripts/contextkit view <file>`: it imports the file into the local explorer and opens `/network`, starting the explorer if none is running. Suggest the command rather than running it yourself, because a newly started explorer keeps running in the foreground until Ctrl+C.

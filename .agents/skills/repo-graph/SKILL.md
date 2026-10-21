@@ -29,4 +29,4 @@ Produce a `REPO_GRAPH.json` that passes the bundled validator, without touching 
 6. **Publish** by renaming the temporary file to `REPO_GRAPH.json`. If the directory has an `INDEX.md`, link the graph from it.
 7. **Report back** with the output path, the views you included, and what you marked inferred or left out.
 
-The graph loads in the ContextKit explorer: run `make web-dev` in a ContextKit checkout and import the file.
+To view the graph, the user can run `contextkit view <file>` from a ContextKit checkout: it imports the graph into the local explorer and opens it, starting the explorer if none is running. Suggest the command rather than running it yourself, because a newly started explorer keeps running in the foreground until Ctrl+C.

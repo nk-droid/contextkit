@@ -6,6 +6,7 @@
 #   contextkit mcp <run-dir> <command> [args]       bin/contextkit-mcp
 #   contextkit export-network <run-dir> [options]   bin/contextkit-export-network
 #   contextkit scan <repo> [options]                bin/contextkit-scan
+#   contextkit view <file|directory> [options]      bin/contextkit-view
 #
 # The checkout is $CONTEXTKIT_HOME if set, else the one this skill is installed from
 # (symlinks resolved), else the one whose bin/contextkit is on PATH.
@@ -32,9 +33,9 @@ fi
 sub="${1:-}"
 if [[ $# -gt 0 ]]; then shift; fi
 case "$sub" in
-  network|analyze|mcp|export-network|scan) exec node "$root/bin/contextkit-$sub" "$@" ;;
+  network|analyze|mcp|export-network|scan|view) exec node "$root/bin/contextkit-$sub" "$@" ;;
   *)
-    echo "usage: contextkit <network|analyze|mcp|export-network|scan> [args...]" >&2
+    echo "usage: contextkit <network|analyze|mcp|export-network|scan|view> [args...]" >&2
     exit 2
     ;;
 esac
