@@ -15,6 +15,13 @@
       "when": 1788697948850,
       "tag": "0001_mean_multiple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789770362475,
+      "tag": "0002_fair_malice",
+      "breakpoints": true
     }
   ]
 }

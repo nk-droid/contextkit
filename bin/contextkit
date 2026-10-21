@@ -15,11 +15,17 @@ trap cleanup EXIT
 
 COMMAND="${1:-}"
 
+if [[ "$COMMAND" == "network" ]]; then
+  shift
+  exec node "$ROOT_DIR/bin/contextkit-network" "$@"
+fi
+
 usage() {
   cat <<'EOF'
 ContextKit - generate repository context packs for humans and AI systems.
 
 Usage:
+  contextkit network <local-repo|public-git-url|run-dir> [--provider static|claude|codex] [--output <file>]
   contextkit generate <github-url-or-local-path> [--audience <name>] [--all] [--with-graph] [--agent <codex|claude>] [--regenerate] [--output <dir>] [--model <model>] [--max-turns <n>] [--keep-clone]
   contextkit help
 

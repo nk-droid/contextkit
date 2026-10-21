@@ -1,0 +1,87 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { ensureRunWorkspace, RunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { assembleNetwork, publishNetwork } from "../src/network/assemble.mjs";
+import { resolveSource, defaultOutput, toolkitRoot } from "../src/network/source.mjs";
+
+const usage = `Usage: contextkit network <local-repo|public-git-url|run-dir> [options]
+  --output <file>               Export path (default: ContextKit's context-packs directory)
+  --provider static|claude|codex Static directory/symbol network, or semantic analysis (default: static)
+  --model <id>                  Model for semantic analysis
+  --timeout-seconds <n>         Time limit per semantic slice (default: 900)
+  --max-turns <n>               Claude turn limit per slice (default: 60)
+  --source-exposure static-only|cached-source (default: static-only)
+  --allow-untracked             Include local untracked files that Git does not ignore
+  --regenerate                  Refresh semantic slices instead of reusing compatible responses
+  --work-dir <dir>              Retain scan and semantic artifacts here for resuming
+
+Import the generated NETWORK_FACTS.json at /network. Unsupported languages retain
+an inferred directory network; extraction limits and missing layers are reported.
+Semantic mode requires an installed, authenticated provider CLI. Provider failures
+leave the previous export intact. Run artifacts include private source excerpts.
+`;
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) { process.stdout.write(usage); return; }
+  const opts = { provider: "static", sourceExposure: "static-only" };
+  const valued = { "--output": "output", "--provider": "provider", "--model": "model", "--source-exposure": "sourceExposure", "--work-dir": "workDir", "--timeout-seconds": "timeoutSeconds", "--max-turns": "maxTurns" };
+  let target;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (valued[arg]) {
+      if (!args[i + 1] || args[i + 1].startsWith("--")) throw new Error(`Missing value for ${arg}`);
+      opts[valued[arg]] = args[++i];
+    } else if (arg === "--allow-untracked") opts.allowUntracked = true;
+    else if (arg === "--regenerate") opts.regenerate = true;
+    else if (!arg.startsWith("-") && !target) target = arg;
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (!target) throw new Error(usage);
+  if (!["static", "claude", "codex"].includes(opts.provider)) throw new Error("Invalid provider; choose static, claude, or codex");
+  if (!["static-only", "cached-source"].includes(opts.sourceExposure)) throw new Error("Invalid source exposure");
+  if (opts.model && opts.provider === "static") throw new Error("--model requires --provider claude or codex");
+  for (const key of ["timeoutSeconds", "maxTurns"]) {
+    if (opts[key] !== undefined && (!/^\d+$/.test(opts[key]) || Number(opts[key]) < 1 || Number(opts[key]) > 86400)) {
+      throw new Error(`${key} must be an integer from 1 to 86400`);
+    }
+  }
+  const source = resolveSource(target);
+  try {
+    const output = path.resolve(opts.output ?? defaultOutput(source));
+    const isRun = fs.existsSync(path.join(source.root, "STATIC_ANALYSIS.json"));
+    const workspace = isRun ? new RunWorkspace(source.root) : ensureRunWorkspace(source.root, {
+      workRoot: path.resolve(opts.workDir ?? path.join(path.dirname(output), ".contextkit", "work")),
+      allowUntracked: opts.allowUntracked,
+    }).workspace;
+    const metaPath = path.join(workspace.dir, "NETWORK_SOURCE.json");
+    if (!isRun) fs.writeFileSync(metaPath, JSON.stringify({ identity: source.identity }, null, 2));
+    const identity = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, "utf8")).identity : null;
+    process.stdout.write(`Run: ${workspace.dir}\n`);
+    if (opts.provider !== "static") {
+      for (const slice of ["foundation", "behavior-data"]) {
+        const command = [path.join(toolkitRoot, "bin/contextkit-analyze"), workspace.dir, "--slice", slice, "--provider", opts.provider, "--source-exposure", opts.sourceExposure];
+        if (opts.model) command.push("--model", opts.model);
+        if (opts.timeoutSeconds) command.push("--timeout-seconds", opts.timeoutSeconds);
+        if (opts.maxTurns) command.push("--max-turns", opts.maxTurns);
+        if (!opts.regenerate) command.push("--reuse");
+        const child = spawnSync(process.execPath, command, { stdio: "inherit" });
+        if (child.status !== 0) throw new Error(`${slice} failed; prior export preserved. Fix the reported error and rerun to resume.`);
+      }
+    }
+    let facts;
+    try {
+      facts = publishNetwork(assembleNetwork(workspace, { provider: opts.provider, sourceIdentity: identity }), output);
+    } catch (error) {
+      throw new Error(`Export failed; prior export preserved. Saved run: ${workspace.dir}\n`
+        + `After fixing the export error, use contextkit-export-network <run-dir> --provider ${opts.provider} --output <file> to retry without a model call.\n`
+        + error.message);
+    }
+    process.stdout.write(`Wrote ${output}\n${facts.architecture.components.length} components, ${facts.code.symbols.length} symbols, ${facts.code.calls.length} calls\n`);
+    for (const warning of facts.warnings) process.stdout.write(`  ${warning}\n`);
+    process.stdout.write("Import this file in the web app at /network.\n");
+  } finally { source.cleanup(); }
+}
+main().catch((error) => { process.stderr.write(`contextkit network: ${error.message}\n`); process.exitCode = 1; });

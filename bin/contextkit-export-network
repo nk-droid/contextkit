@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+import path from "node:path";
+import { RunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { assembleNetwork, publishNetwork } from "../src/network/assemble.mjs";
+
+try {
+  const args = process.argv.slice(2);
+  let target, output, provider = "claude";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      console.log("Usage: contextkit-export-network <run-dir> --output <file> [--provider claude|codex|static]");
+      process.exit(0);
+    }
+    if (["--output", "--provider"].includes(arg)) {
+      if (!args[i + 1] || args[i + 1].startsWith("--")) throw new Error(`Missing value for ${arg}`);
+      if (arg === "--output") output = args[++i]; else provider = args[++i];
+    } else if (!arg.startsWith("-") && !target) target = arg;
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (!target || !output) throw new Error("Expected <run-dir> --output <file>; use --help");
+  if (!["static", "claude", "codex"].includes(provider)) throw new Error("Invalid provider");
+  publishNetwork(assembleNetwork(new RunWorkspace(path.resolve(target)), { provider }), path.resolve(output));
+  console.log(`Wrote ${path.resolve(output)}`);
+} catch (error) { console.error(`contextkit-export-network: ${error.message}`); process.exitCode = 1; }

@@ -19,6 +19,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import Image from "next/image";
+import Link from "next/link";
 import { layoutGraph, type LayoutDirection } from "../graph/layout";
 import {
   graphKindOrder,
@@ -30,6 +31,7 @@ import {
   type GraphNodeData,
   type RepoGraphFile,
 } from "../graph/schema";
+import { githubSourceUrl } from "../source-links";
 import { RepositoryNode } from "./RepositoryNode";
 import { RepositoryEdge } from "./RepositoryEdge";
 
@@ -78,19 +80,6 @@ function nodeMatches(node: GraphNodeData, query: string) {
         item.detail?.toLowerCase().includes(needle) === true,
     )
   );
-}
-
-function githubEvidenceUrl(
-  source: string,
-  revision: string | null | undefined,
-  path: string,
-) {
-  if (!revision) return null;
-  if (!/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i.test(source))
-    return null;
-  const repositoryUrl = source.replace(/\/$/, "").replace(/\.git$/i, "");
-  const safePath = path.split("/").map(encodeURIComponent).join("/");
-  return `${repositoryUrl}/blob/${encodeURIComponent(revision)}/${safePath}`;
 }
 
 async function responseError(response: Response) {
@@ -641,6 +630,9 @@ function Atlas() {
         ) : null}
 
         <div className="sidebar-imports">
+          <Link href="/network">
+            <span>◎</span> Component network
+          </Link>
           <button onClick={() => fileInputRef.current?.click()}>
             <span>＋</span> Add graph files
           </button>
@@ -1085,7 +1077,7 @@ function Atlas() {
                 {selectedEvidence.length ? (
                   <div className="evidence-list">
                     {selectedEvidence.map((item) => {
-                      const sourceUrl = githubEvidenceUrl(
+                      const sourceUrl = githubSourceUrl(
                         activeRepository.repository.source,
                         repositoryRevision,
                         item.path,

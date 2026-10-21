@@ -14,7 +14,7 @@ export const graphNodeKinds = [
   "output",
 ] as const;
 
-const RelativePathSchema = z
+export const RelativePathSchema = z
   .string()
   .min(1)
   .refine(

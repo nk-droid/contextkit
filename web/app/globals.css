@@ -46,9 +46,9 @@ button { color: inherit; }
 .graph-nav strong { display: block; font-size: 11px; }
 .graph-nav small { display: block; font-size: 8px; margin-top: 3px; opacity: .62; }
 .sidebar-imports { border-top: 1px solid #315757; display: grid; gap: 4px; margin-top: auto; padding: 13px 3px 9px; }
-.sidebar-imports button { background: transparent; border: 0; border-radius: 7px; color: #a7bab6; cursor: pointer; font-size: 10px; padding: 8px; text-align: left; }
-.sidebar-imports button:hover { background: #1d4b4b; color: white; }
-.sidebar-imports button span { color: #e7c66c; display: inline-block; margin-right: 7px; text-align: center; width: 13px; }
+.sidebar-imports button, .sidebar-imports a { background: transparent; border: 0; border-radius: 7px; color: #a7bab6; cursor: pointer; font-size: 10px; padding: 8px; text-align: left; text-decoration: none; }
+.sidebar-imports button:hover, .sidebar-imports a:hover { background: #1d4b4b; color: white; }
+.sidebar-imports button span, .sidebar-imports a span { color: #e7c66c; display: inline-block; margin-right: 7px; text-align: center; width: 13px; }
 .sidebar-note { align-items: flex-start; border-top: 1px solid #315757; color: #9db3af; display: flex; font-size: 9px; gap: 9px; line-height: 1.55; padding: 15px 8px 0; }
 .sidebar-note p { margin: 0; }
 .note-icon { border: 1px solid #52716f; border-radius: 50%; flex: 0 0 auto; font-family: Georgia, serif; height: 18px; line-height: 16px; text-align: center; width: 18px; }

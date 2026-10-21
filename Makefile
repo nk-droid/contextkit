@@ -17,7 +17,7 @@ help:
 
 install:
 	npm ci --ignore-scripts
-	chmod +x bin/contextkit
+	chmod +x bin/contextkit bin/contextkit-network bin/contextkit-export-network
 	@echo "Add this to your shell profile:"
 	@echo "export PATH=$$(pwd)/bin:\$$PATH"
 
@@ -53,6 +53,7 @@ test:
 	node --test tests/*.test.mjs
 
 web-install:
+	npm ci --ignore-scripts
 	npm --prefix web ci
 
 web-dev:

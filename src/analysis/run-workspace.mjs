@@ -25,7 +25,10 @@ export function runIdFor(treeFingerprint) {
 export class RunWorkspace {
   constructor(dir) {
     this.dir = dir;
-    this.runId = path.basename(dir);
+    const staticPath = path.join(dir, "STATIC_ANALYSIS.json");
+    this.runId = fs.existsSync(staticPath)
+      ? runIdFor(JSON.parse(fs.readFileSync(staticPath, "utf8")).repository.treeFingerprint)
+      : path.basename(dir);
   }
 
   get staticPath() { return path.join(this.dir, "STATIC_ANALYSIS.json"); }
@@ -134,7 +137,7 @@ export class RunWorkspace {
  * alternative, naming the directory before the scan, would mean the directory name and
  * its contents could disagree.
  */
-export function ensureRunWorkspace(input, { workRoot = null, quiet = true } = {}) {
+export function ensureRunWorkspace(input, { workRoot = null, quiet = true, allowUntracked = false } = {}) {
   const target = path.resolve(input);
   if (!fs.existsSync(target)) {
     throw new Error(`no such directory: ${target}`);
@@ -146,23 +149,16 @@ export function ensureRunWorkspace(input, { workRoot = null, quiet = true } = {}
 
   // Already a run directory: adopt it where it sits, or move it into place.
   if (fs.existsSync(path.join(target, "STATIC_ANALYSIS.json"))) {
-    const document = JSON.parse(fs.readFileSync(path.join(target, "STATIC_ANALYSIS.json"), "utf8"));
-    const runId = runIdFor(document.repository.treeFingerprint);
-    if (path.basename(target) === runId) return { workspace: new RunWorkspace(target), scanned: false };
-
-    const destination = path.join(root, runId);
-    fs.mkdirSync(destination, { recursive: true });
-    for (const name of ["STATIC_ANALYSIS.json", "SOURCE_INDEX.jsonl"]) {
-      const from = path.join(target, name);
-      if (fs.existsSync(from)) fs.copyFileSync(from, path.join(destination, name));
-    }
-    return { workspace: new RunWorkspace(destination), scanned: false, adoptedFrom: target };
+    // Adopt in place, regardless of directory name. Copying only scan files used
+    // to lose semantic responses and make the runner/exporter disagree on paths.
+    return { workspace: new RunWorkspace(target), scanned: false };
   }
 
   if (!fs.statSync(target).isDirectory()) throw new Error(`not a directory: ${target}`);
 
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "contextkit-staging-"));
   const scanArgs = [SCAN_BIN, target, "--out", staging];
+  if (allowUntracked) scanArgs.push("--allow-untracked");
   if (quiet) scanArgs.push("--quiet");
   const scan = spawnSync(process.execPath, scanArgs, { stdio: ["ignore", "inherit", "inherit"] });
   if (scan.status !== 0) {

@@ -20,6 +20,25 @@ export const repositories = sqliteTable(
   ],
 );
 
+export const factsDocuments = sqliteTable(
+  "facts_documents",
+  {
+    repositoryId: text("repository_id").primaryKey(),
+    name: text("name").notNull(),
+    sourceLabel: text("source_label").notNull(),
+    revision: text("revision"),
+    artifactId: text("artifact_id").notNull(),
+    componentCount: integer("component_count").notNull(),
+    symbolCount: integer("symbol_count").notNull(),
+    content: text("content").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("facts_documents_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
 export const graphDocuments = sqliteTable("graph_documents", {
   repositoryId: text("repository_id")
     .primaryKey()

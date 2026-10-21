@@ -16,6 +16,10 @@ SOURCE_INDEX.jsonl
 run/
 runs/
 
+# Per-run analysis workspaces: transcripts, access logs, and provider results. These
+# quote source and record what a provider was shown, so they follow the same rule.
+.contextkit/
+
 node_modules/
 __pycache__/
 .pytest_cache/
