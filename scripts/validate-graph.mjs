@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const graphKinds = new Set(["architecture", "runtime-flow", "imports", "deployment"]);
 const nodeKinds = new Set([
@@ -184,4 +184,14 @@ function main() {
   console.log(`Valid repository graph: ${file}`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main();
+// Compare real paths: reached through a symlink (such as an installed skill), argv[1] is
+// the link while import.meta.url is its target, and main() would silently never run.
+function invokedDirectly() {
+  try {
+    return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) main();

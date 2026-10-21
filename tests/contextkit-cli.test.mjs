@@ -185,6 +185,78 @@ test("Claude failures surface both stdout and stderr", () => {
   }
 });
 
+test("generate sends the skills' standards, guides, and graph rules to the agent", () => {
+  const root = mkdtempSync(join(tmpdir(), "contextkit-cli-prompts-"));
+  try {
+    const repository = join(root, "sample-repository");
+    const prompts = join(root, "prompts");
+    const fakeBin = join(root, "fake-bin");
+    mkdirSync(join(repository, "bin"), { recursive: true });
+    mkdirSync(prompts);
+    mkdirSync(fakeBin);
+    writeFileSync(join(repository, "bin", "tool"), "#!/bin/sh\n");
+    writeFileSync(join(root, "graph.json"), JSON.stringify(graphDocument()));
+    // Saves each prompt under the name of the file the CLI asked for.
+    writeFileSync(
+      join(fakeBin, "codex"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output-last-message" ]]; then output="$2"; shift 2; else shift; fi
+done
+name="$(basename "$output")"
+cat > "$PROMPTS/\${name%%.tmp.*}"
+if [[ "$name" == .REPO_GRAPH.json.* ]]; then cp "$FAKE_GRAPH" "$output"; else echo "# Document" > "$output"; fi
+`,
+    );
+    chmodSync(join(fakeBin, "codex"), 0o755);
+
+    const result = spawnSync(
+      join(projectRoot, "bin", "contextkit"),
+      ["generate", repository, "--all", "--with-graph", "--output", join(root, "output")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PROMPTS: prompts,
+          FAKE_GRAPH: join(root, "graph.json"),
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+
+    const skills = join(projectRoot, ".agents", "skills");
+    const read = (...parts) => readFileSync(join(...parts), "utf8").trimEnd();
+    const standards = read(skills, "repo-context", "references", "standards.md");
+    const documents = {
+      human: "HUMAN_OVERVIEW.md",
+      architecture: "ARCHITECTURE.md",
+      modules: "MODULE_GUIDE.md",
+      reviewer: "REVIEWER_GUIDE.md",
+      contributor: "CONTRIBUTOR_GUIDE.md",
+      agent: "AGENT_CONTEXT.md",
+      interviewer: "INTERVIEWER_BRIEF.md",
+    };
+    for (const [audience, file] of Object.entries(documents)) {
+      const prompt = read(prompts, file);
+      assert.ok(prompt.includes(standards), `${file} prompt lacks the standards`);
+      assert.ok(
+        prompt.includes(read(skills, "repo-context", "references", `${audience}.md`)),
+        `${file} prompt lacks its audience guide`,
+      );
+    }
+    assert.ok(
+      read(prompts, ".REPO_GRAPH.json").includes(read(skills, "repo-graph", "references", "graph-rules.md")),
+      "graph prompt lacks the graph rules",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Claude graph generation requests schema-constrained output", () => {
   const setup = fixture();
   try {

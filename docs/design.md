@@ -45,7 +45,7 @@ The MVP needs only a thin runner:
 - call the selected agent CLI
 - save markdown output
 
-The intelligence belongs in prompts, skills, agents, and templates.
+The intelligence belongs in the agent skills under `.agents/skills/`. The CLI feeds their audience guides and graph rules to headless agents, and interactive agents load the same skills directly.
 
 ## Repository graph contract
 

@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Prompt text lives in the agent skills; this script feeds the same files to headless agents.
+SKILLS_DIR="$ROOT_DIR/.agents/skills"
+DOC_STANDARDS="$SKILLS_DIR/repo-context/references/standards.md"
+GRAPH_RULES="$SKILLS_DIR/repo-graph/references/graph-rules.md"
 WORK_DIR_TO_CLEAN=""
 KEEP_CLONE_ON_EXIT="false"
 
@@ -91,13 +95,8 @@ is_git_url() {
 
 prompt_for_audience() {
   case "$1" in
-    human) echo "$ROOT_DIR/contextkit/prompts/docs/human.md" ;;
-    architecture) echo "$ROOT_DIR/contextkit/prompts/docs/architecture.md" ;;
-    modules) echo "$ROOT_DIR/contextkit/prompts/docs/module-guide.md" ;;
-    reviewer) echo "$ROOT_DIR/contextkit/prompts/docs/reviewer.md" ;;
-    contributor) echo "$ROOT_DIR/contextkit/prompts/docs/contributor.md" ;;
-    agent) echo "$ROOT_DIR/contextkit/prompts/docs/agent.md" ;;
-    interviewer) echo "$ROOT_DIR/contextkit/prompts/docs/interviewer.md" ;;
+    human|architecture|modules|reviewer|contributor|agent|interviewer)
+      echo "$SKILLS_DIR/repo-context/references/$1.md" ;;
     *) fail "unknown audience: $1" ;;
   esac
 }
@@ -152,7 +151,7 @@ run_claude_generation() {
   local out_file="$3"
   local model="$4"
   local max_turns="$5"
-  local system_prompt_file="${6:-$ROOT_DIR/contextkit/prompts/system.md}"
+  local system_prompt_file="${6:-$DOC_STANDARDS}"
   local json_schema_file="${7:-}"
 
   local claude_args=(
@@ -210,7 +209,7 @@ run_codex_generation() {
   local prompt="$2"
   local out_file="$3"
   local model="$4"
-  local system_prompt_file="${5:-$ROOT_DIR/contextkit/prompts/system.md}"
+  local system_prompt_file="${5:-$DOC_STANDARDS}"
 
   local codex_prompt
   codex_prompt="$(cat "$system_prompt_file")
@@ -271,18 +270,18 @@ run_graph_generation() {
   revision="$(git -C "$target_path" rev-parse --short HEAD 2>/dev/null || true)"
 
   local prompt
-  prompt="$(cat "$ROOT_DIR/contextkit/prompts/graph.md")
+  prompt="Create the repository graph document for the target repository.
 
 Target repository path:
 $target_path
 
-Repository slug:
+Repository slug (use as repository.id):
 $repo_slug
 
-Source label:
+Source label (use as repository.source):
 $source_label
 
-Git revision:
+Git revision (use as repository.revision, or null if unknown):
 ${revision:-unknown}
 
 Output requirements:
@@ -299,7 +298,7 @@ Output requirements:
 
   case "$agent" in
     claude)
-      if run_claude_generation "$target_path" "$prompt" "$temp_file" "$model" "$max_turns" "$ROOT_DIR/contextkit/prompts/graph-system.md" "$ROOT_DIR/schemas/repo-graph.schema.json"; then
+      if run_claude_generation "$target_path" "$prompt" "$temp_file" "$model" "$max_turns" "$GRAPH_RULES" "$ROOT_DIR/schemas/repo-graph.schema.json"; then
         :
       else
         local status="$?"
@@ -308,7 +307,7 @@ Output requirements:
       fi
       ;;
     codex)
-      if run_codex_generation "$target_path" "$prompt" "$temp_file" "$model" "$ROOT_DIR/contextkit/prompts/graph-system.md"; then
+      if run_codex_generation "$target_path" "$prompt" "$temp_file" "$model" "$GRAPH_RULES"; then
         :
       else
         local status="$?"

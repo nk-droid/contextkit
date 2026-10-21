@@ -128,6 +128,25 @@ context-packs/
 
 Without `--all`, ContextKit generates the human overview by default. Select another audience with `--audience human`, `architecture`, `modules`, `reviewer`, `contributor`, `agent`, or `interviewer`.
 
+## Agent Skills
+
+The same documents and graph are available as agent skills, so Claude Code, Codex, and other agents that support skills can produce them inside a session, without the CLI.
+
+| Skill | Produces |
+|---|---|
+| `repo-context` | Any of the audience documents above, or a full pack with `INDEX.md` |
+| `repo-graph` | `REPO_GRAPH.json`, checked with the bundled validator before it is written |
+
+The skills live in `.agents/skills/`, which Codex and most other agents read; `.claude/skills/` links to them for Claude Code. They work as-is inside this checkout. To use them on other repositories, link them into your user-level skill directories:
+
+```bash
+make install-skills   # links into ~/.claude/skills and ~/.agents/skills
+```
+
+Then ask an agent for something like "a reviewer guide for this repo", or invoke a skill directly: `/repo-context reviewer` in Claude Code, `$repo-context` in Codex. Output goes to `~/context-packs/<repo-name>/` unless you name a directory.
+
+The CLI reads the same files. `contextkit generate` sends `repo-context/references/standards.md` and the audience guide to the agent, and `--with-graph` sends `repo-graph/references/graph-rules.md`, so prompt changes go in the skills. `repo-graph` also carries copies of `scripts/validate-graph.mjs` and `schemas/repo-graph.schema.json`; `make sync-skills` refreshes them, and `make test` fails if they drift.
+
 ## Repository Graph
 
 `--with-graph` generates a portable `REPO_GRAPH.json` document conforming to the versioned contract in `schemas/repo-graph.schema.json`.
@@ -303,6 +322,7 @@ Import a facts JSON file from the page's left panel. The browser keeps only the 
 - Graph output is written to a temporary file and validated before an atomic replacement.
 - Invalid regeneration preserves the previous graph and saves rejected output as `.REPO_GRAPH.invalid-output.txt` in the output directory.
 - The CLI validator rejects evidence paths that escape the repository or do not exist there.
+- The agent skills give an agent the same rules as instructions but cannot restrict its tools; prefer the CLI for unattended runs and repositories you do not trust.
 
 Generated context is still a starting point for investigation, not a replacement for code review.
 
@@ -319,6 +339,7 @@ ContextKit currently uses deterministic tests for the behavior it can verify aut
 - dangling-edge rejection
 - observed-evidence enforcement
 - duplicate-identifier rejection
+- agent skill integrity and the CLI's use of the skill prompts
 
 Run the automated CLI, scanner, provider, validation, and network checks:
 
@@ -337,6 +358,7 @@ Repository-scale evaluation should additionally record the pinned commit, source
 ## Architecture Decisions
 
 - **Thin Bash orchestration:** keeps the CLI focused on source handling and agent execution rather than duplicating repository-analysis logic.
+- **Prompts live in agent skills:** the CLI and interactive agents read the same audience guides and graph rules, so the two paths cannot drift apart.
 - **Audience-specific documents:** produces focused context instead of one long summary that serves every reader poorly.
 - **External output:** avoids modifying repositories that a user only wants to understand.
 - **Versioned graph contract:** keeps generated JSON portable and independent from the renderer.

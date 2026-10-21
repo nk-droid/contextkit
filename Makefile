@@ -1,4 +1,4 @@
-.PHONY: help install demo graph-test scan scan-self mcp mcp-probe test web-install web-dev web-build
+.PHONY: help install demo graph-test scan scan-self mcp mcp-probe test install-skills sync-skills web-install web-dev web-build
 
 help:
 	@echo "ContextKit"
@@ -12,6 +12,8 @@ help:
 	@echo "  make mcp RUN=<dir> ARGS='<cmd>'  Inspect a run through the MCP layer"
 	@echo "  make mcp-probe RUN=<dir>  Check the access boundary with fake providers"
 	@echo "  make test      Run every test suite"
+	@echo "  make install-skills  Link the agent skills into ~/.claude/skills and ~/.agents/skills"
+	@echo "  make sync-skills  Refresh the files the repo-graph skill bundles"
 	@echo "  make web-dev   Start the repository graph UI"
 	@echo "  make web-build Typecheck, lint, and build the graph UI"
 
@@ -51,6 +53,30 @@ mcp-probe:
 
 test:
 	node --test tests/*.test.mjs
+
+# Skills meant for use on any repository. Skills for working on ContextKit itself stay out.
+SKILLS := repo-context repo-graph
+SKILLS_DIRS ?= $(HOME)/.claude/skills $(HOME)/.agents/skills
+
+# Claude Code reads the first directory; Codex and most other agents read the second.
+# Links point at this checkout. Existing real directories are left alone.
+install-skills:
+	@for dir in $(SKILLS_DIRS); do \
+	  mkdir -p "$$dir"; \
+	  for skill in $(SKILLS); do \
+	    link="$$dir/$$skill"; \
+	    if [ -e "$$link" ] && [ ! -L "$$link" ]; then \
+	      echo "skipped $$link: exists and is not a symlink"; \
+	    else \
+	      ln -sfn "$(CURDIR)/.agents/skills/$$skill" "$$link" && echo "linked $$link"; \
+	    fi; \
+	  done; \
+	done
+
+# repo-graph carries copies of these so it works outside this checkout.
+sync-skills:
+	cp scripts/validate-graph.mjs .agents/skills/repo-graph/scripts/validate-graph.mjs
+	cp schemas/repo-graph.schema.json .agents/skills/repo-graph/references/repo-graph.schema.json
 
 web-install:
 	npm ci --ignore-scripts

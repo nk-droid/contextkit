@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { safeRelativePath, validateGraphDocument } from "../scripts/validate-graph.mjs";
+
+const scriptsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts");
 
 function validDocument() {
   return {
@@ -71,4 +78,20 @@ test("rejects duplicate identifiers", () => {
   document.graphs[0].nodes.push({ ...document.graphs[0].nodes[1] });
   const errors = validateGraphDocument(document);
   assert.ok(errors.some((error) => error.includes("duplicate node id service")));
+});
+
+test("still validates when run through a symlink, as an installed skill is", () => {
+  const root = mkdtempSync(join(tmpdir(), "contextkit-validator-link-"));
+  try {
+    symlinkSync(scriptsDir, join(root, "linked"));
+    const graph = join(root, "graph.json");
+    writeFileSync(graph, JSON.stringify({ schemaVersion: 2 }));
+    const result = spawnSync(process.execPath, [join(root, "linked", "validate-graph.mjs"), graph], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /schemaVersion: expected 1/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
