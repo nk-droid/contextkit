@@ -14,6 +14,9 @@ import {
 } from "./access-policy.mjs";
 import { evidenceId, sha256 } from "../stable-ids.mjs";
 import { buildProtectedSnapshot, validateAnnotations } from "../merge/protected-fields.mjs";
+import { SLICES } from "../slices/plan-slices.mjs";
+import { validateSliceResult } from "../slices/slice-kit.mjs";
+import { decodeCodexResult } from "../../../scripts/codex-schema.mjs";
 
 const RESOURCE_PREFIX = "contextkit://runs/";
 
@@ -25,11 +28,14 @@ export class ContextKitMcpServer {
    *   it happens: a provider CLI may kill the server process rather than closing stdin,
    *   and a write deferred to exit is then simply lost.
    */
-  constructor(store, { limits = LIMITS, onAccess = null } = {}) {
+  constructor(store, { limits = LIMITS, onAccess = null, onEvidence = null, registry = null, provider = null } = {}) {
     this.store = store;
     this.limits = limits;
     this.runId = store.runId;
     this.onAccess = onAccess;
+    this.onEvidence = onEvidence;
+    this.registry = registry;
+    this.provider = provider;
     this.accessLog = [];
     // Evidence the provider asked to have materialized during analysis. Kept apart
     // from scanner evidence so the run report can show what the model requested.
@@ -264,9 +270,9 @@ export class ContextKitMcpServer {
             sliceId: str("Which slice this result is for."),
             candidate: {
               type: "object",
-              description: "Object with `annotations` (targetId, basis, evidenceIds, fields) "
-                + "and optional `entities`. Fields may only carry semantic enrichment; "
-                + "scanner-measured values are rejected.",
+              description: "The complete result object for the named slice, conforming to its "
+                + "output schema. Partial results are rejected for foundation and behavior-data. "
+                + "Scanner-measured values cannot be rewritten in annotations.",
             },
           },
           required: ["sliceId", "candidate"],
@@ -545,6 +551,7 @@ export class ContextKitMcpServer {
       requestedByProvider: true,
     };
     this.requestedEvidence.set(id, record);
+    this.onEvidence?.(record);
     return record;
   }
 
@@ -565,6 +572,12 @@ export class ContextKitMcpServer {
     if (!candidate || typeof candidate !== "object") {
       throw new AccessDenied("bad-request", "candidate must be an object", {});
     }
+    // Codex transports annotation dictionaries as entries in its output schema.
+    // Its preflight must decode the same representation as the final adapter.
+    if (this.provider === "codex") {
+      try { candidate = decodeCodexResult(structuredClone(candidate)); }
+      catch (error) { throw new AccessDenied("bad-request", error.message, {}); }
+    }
 
     // Evidence the provider resolved this session is not in the static artifact yet, so
     // the snapshot is extended with it for the duration of the check.
@@ -579,7 +592,23 @@ export class ContextKitMcpServer {
       annotations: candidate.annotations ?? [],
       entities: candidate.entities ?? [],
     };
-    const { valid, violations } = validateAnnotations(slice, snapshot);
+    const definition = SLICES[sliceId];
+    let valid;
+    let violations;
+    if (definition) {
+      const checked = validateSliceResult(candidate, definition, {
+        snapshot, store: this.store, registry: this.registry,
+      });
+      violations = checked.errors;
+      if (definition.dependsOn.length && !this.registry) {
+        violations.push({ code: "missing-registry", message: "Run a validated foundation slice before validating behavior-data." });
+      }
+      valid = violations.length === 0;
+    } else {
+      // Preserve the generic annotation checks used by boundary probes and callers
+      // without a registered output schema. Production slices always use the full gate.
+      ({ valid, violations } = validateAnnotations(slice, snapshot));
+    }
 
     if (valid) this.candidates.set(sliceId, candidate);
     const result = {

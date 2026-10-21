@@ -11,25 +11,12 @@
  * several turns rebuilding what the scanner already knows, and arrives at the actual
  * question with less budget and no better information.
  */
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { validateAnnotations } from "../merge/protected-fields.mjs";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+import {
+  PROMPT_SET_VERSION as KIT_VERSION, checkPaths, defineSlice, validateSliceResult,
+} from "./slice-kit.mjs";
 
 export const SLICE_ID = "foundation";
-export const PROMPT_SET_VERSION = "1.0.0";
-
-export function loadSchema() {
-  return JSON.parse(fs.readFileSync(
-    path.join(ROOT, "schemas/analysis-slices/foundation.schema.json"), "utf8"));
-}
-
-export function loadPrompts() {
-  const read = (p) => fs.readFileSync(path.join(ROOT, "prompts/analysis", p), "utf8");
-  return { system: read("common-system.md"), slice: read("foundation.md") };
-}
+export const PROMPT_SET_VERSION = KIT_VERSION;
 
 /** Directory rollup, so the model sees shape without paging the whole inventory. */
 function directoryMap(files, limit = 40) {
@@ -109,7 +96,7 @@ export function buildBriefing(store) {
 }
 
 export function buildPrompt(store) {
-  const { system, slice } = loadPrompts();
+  const { system, slice } = foundation.loadPrompts();
   const briefing = buildBriefing(store);
   return {
     systemPrompt: system,
@@ -130,75 +117,15 @@ export function buildPrompt(store) {
 }
 
 /**
- * Validate a foundation result against the run.
+ * Validate a foundation result.
  *
- * Layered on purpose: shape first, then the protected-field and grounding rules shared
- * with the assembler, then the rules specific to this slice. A caller gets every
- * violation at once rather than one per round trip.
+ * Delegates to the shared validator. Foundation once had its own because it runs before
+ * any registry exists - but the shared validator already skips reference resolution when
+ * there is no registry, and keeping a second copy was how the two drifted apart in the
+ * first place. Its one distinct rule, that components own real paths, lives in `checks`.
  */
 export function validateFoundation(result, snapshot, store) {
-  const errors = [];
-  const add = (code, message, detail = {}) => errors.push({ code, message, ...detail });
-
-  if (!result || typeof result !== "object") {
-    return { valid: false, errors: [{ code: "not-an-object", message: "result must be an object" }] };
-  }
-  for (const key of ["project", "components", "externalSystems", "annotations"]) {
-    if (!(key in result)) add("missing-section", `result is missing ${key}`, { key });
-  }
-
-  const components = result.components ?? [];
-  const externals = result.externalSystems ?? [];
-
-  // Shared rules: protected fields, grounding, reference resolution, prose hygiene.
-  //
-  // The run binding is supplied from the snapshot rather than read off the result: the
-  // model cannot emit an artifact id (the schema has no field for one), so asking it to
-  // match here would compare the snapshot against itself and always pass. Binding is a
-  // property of the stored response, and checkRunBinding is where it is enforced.
-  const shared = validateAnnotations({
-    sliceId: SLICE_ID,
-    artifactId: snapshot.artifactId,
-    treeFingerprint: snapshot.treeFingerprint,
-    annotations: result.annotations ?? [],
-    entities: [...components, ...externals],
-  }, snapshot);
-  errors.push(...shared.violations);
-
-  // Ids must be unique within the slice as well as new to the run.
-  const seen = new Set();
-  for (const entity of [...components, ...externals]) {
-    if (seen.has(entity.id)) add("duplicate-entity-id", `${entity.id} is declared twice`, { id: entity.id });
-    seen.add(entity.id);
-  }
-
-  // Component paths are claims about the repository and must resolve to real files.
-  for (const component of components) {
-    for (const p of component.paths ?? []) {
-      const known = store.filesByPath.has(p)
-        || [...store.filesByPath.keys()].some((f) => f.startsWith(`${p.replace(/\/$/, "")}/`));
-      if (!known) {
-        add("unknown-path", `component ${component.id} claims ${p}, which is not in the inventory`,
-          { id: component.id, path: p });
-      }
-    }
-    if (!component.paths?.length) {
-      add("component-without-paths", `component ${component.id} owns no paths`, { id: component.id });
-    }
-  }
-
-  for (const record of [result.project, ...components, ...externals].filter(Boolean)) {
-    if (record.basis === "observed" && !(record.evidenceIds ?? []).length) {
-      add("observed-without-evidence", "an observed claim carries no evidence", { id: record.id ?? "project" });
-    }
-    for (const id of record.evidenceIds ?? []) {
-      if (!snapshot.evidenceIds.has(id)) {
-        add("unresolved-evidence", `evidence ${id} is not in this run`, { id: record.id ?? "project", evidenceId: id });
-      }
-    }
-  }
-
-  return { valid: errors.length === 0, errors };
+  return validateSliceResult(result, foundation, { snapshot, store, registry: null });
 }
 
 /**
@@ -271,3 +198,40 @@ export function checkAgainstRegistry(registry, referencedIds) {
   const known = new Set(registry.entityIds);
   return [...new Set(referencedIds)].filter((id) => !known.has(id));
 }
+
+
+/**
+ * The slice definition, so the runner can treat foundation like any other slice.
+ *
+ * Foundation keeps its own validator rather than using the kit's generic one: it runs
+ * before any registry exists, so the reference rules the kit applies have nothing to
+ * resolve against, and its component-path rule has no equivalent elsewhere.
+ */
+export const foundation = defineSlice({
+  id: SLICE_ID,
+  order: 1,
+  dependsOn: [],
+  title: "Foundation",
+  schemaFile: "foundation.schema.json",
+  promptFile: "foundation.md",
+  entityPrefixes: ["component", "external", "user", "capability", "nongoal", "style", "role"],
+  entityArrays: ["components", "externalSystems", "primaryUsers", "capabilities",
+    "nonGoals", "repositoryRoles", "styles"],
+  buildBriefing: (store) => buildBriefing(store),
+  checks(result, { store }) {
+    const errors = [];
+    for (const component of result.components ?? []) {
+      errors.push(...checkPaths(component.paths, store, { pointer: `component ${component.id}` }));
+      if (!component.paths?.length) {
+        errors.push({
+          code: "component-without-paths",
+          message: `component ${component.id} owns no paths`, id: component.id,
+        });
+      }
+    }
+    return errors;
+  },
+});
+
+export const loadSchema = () => foundation.loadSchema();
+export const loadPrompts = () => foundation.loadPrompts();

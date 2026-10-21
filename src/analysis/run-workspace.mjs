@@ -81,6 +81,8 @@ export class RunWorkspace {
 
   /** Everything the providers touched, assembled from their per-call logs. */
   writeRunReport({ repository, summary, providers }) {
+    const previous = fs.existsSync(this.runReportPath)
+      ? JSON.parse(fs.readFileSync(this.runReportPath, "utf8")) : null;
     const report = {
       runId: this.runId,
       repository,
@@ -99,6 +101,13 @@ export class RunWorkspace {
         accessLog: p.mcpReport?.accessLog ?? [],
       })),
     };
+    // A later slice must not erase the audit of what an earlier slice accessed.
+    // Re-running the same provider/slice replaces only that slice's latest report.
+    const key = (entry) => `${entry.provider}:${entry.sliceId}`;
+    const combined = new Map((previous?.runId === this.runId ? previous.providers ?? [] : [])
+      .map((entry) => [key(entry), entry]));
+    for (const entry of report.providers) combined.set(key(entry), entry);
+    report.providers = [...combined.values()];
     fs.writeFileSync(this.runReportPath, JSON.stringify(report, null, 2));
     return this.runReportPath;
   }

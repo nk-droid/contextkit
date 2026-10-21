@@ -19,6 +19,8 @@ export function toClaudeSchema(schema) {
       return;
     }
     if (!value || typeof value !== "object") return;
+    // Internal assembly metadata is not a provider JSON Schema keyword.
+    delete value["x-target"];
     if (typeof value.$ref === "string") {
       value.$ref = value.$ref.replace(/^#\/\$defs\//, "#/definitions/");
     }

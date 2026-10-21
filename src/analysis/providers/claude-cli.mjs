@@ -49,7 +49,7 @@ export class ClaudeCliProvider {
 
     const workspace = workDir ?? createIsolatedWorkspace(`claude-${sliceId}`);
     const mcpLog = path.join(workspace, "mcp-access.json");
-    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure });
+    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure, provider: this.name, sliceId });
     const configPath = path.join(workspace, "mcp-config.json");
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
@@ -87,18 +87,23 @@ export class ClaudeCliProvider {
     if (!outcome.ok) {
       throw new ProviderError(
         outcome.timedOut ? `claude timed out after ${this.timeoutMs}ms` : "claude exited non-zero",
-        { provider: this.name, stage: "invoke", stderr: outcome.stderr, code: outcome.status });
+        { provider: this.name, stage: "invoke",
+          stderr: outcome.stderr || extractJson(outcome.stdout)?.result || outcome.stdout,
+          code: outcome.status });
     }
 
     // --output-format json wraps the answer in an envelope; the text we want is `result`.
     const envelope = extractJson(outcome.stdout);
+    if (envelope?.is_error) throw new ProviderError(
+      `claude returned ${envelope.subtype ?? "an error"}`,
+      { provider: this.name, stage: "result", stderr: envelope.result ?? JSON.stringify(envelope.errors ?? []) });
     const text = envelope && typeof envelope.result === "string" ? envelope.result : outcome.stdout;
 
     return analysisResult({
       provider: this.name,
       model: envelope?.model ?? this.model,
       sliceId,
-      result: extractJson(text),
+      result: envelope?.structured_output ?? extractJson(text),
       raw: text,
       usage: envelope?.usage ?? null,
       durationMs,

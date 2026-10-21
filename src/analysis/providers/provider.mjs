@@ -48,12 +48,14 @@ export function createIsolatedWorkspace(label = "run") {
 }
 
 /** The stdio MCP server descriptor both adapters configure their client with. */
-export function mcpServerDescriptor(runDir, { logPath = null, sourceExposure = "static-only" } = {}) {
+export function mcpServerDescriptor(runDir, { logPath = null, sourceExposure = "static-only", provider = null, sliceId = null } = {}) {
   const entry = path.resolve(
     path.dirname(new URL(import.meta.url).pathname), "../../../bin/contextkit-mcp-stdio");
   const args = [entry, path.resolve(runDir)];
   if (logPath) args.push("--log", path.resolve(logPath));
   args.push("--source-exposure", sourceExposure);
+  if (provider) args.push("--provider", provider);
+  if (sliceId) args.push("--slice", sliceId);
   return { name: "contextkit", command: process.execPath, args };
 }
 
@@ -164,6 +166,8 @@ export function readAccessLog(logPath) {
         return acc;
       }, {}),
       accessLog: entries,
+      requestedEvidence: fs.existsSync(`${logPath}.evidence.jsonl`)
+        ? fs.readFileSync(`${logPath}.evidence.jsonl`, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
       source: lines,
     };
   }

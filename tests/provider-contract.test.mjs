@@ -106,6 +106,17 @@ const request = (overrides = {}) => ({
   ...overrides,
 });
 
+test("Claude structured-output envelopes are unwrapped instead of treated as facts", async () => {
+  const binary = fakeCli("claude-structured", `process.stdout.write(JSON.stringify({ type: "result", result: "", structured_output: ${JSON.stringify(ANSWER)} }));`);
+  const response = await new ClaudeCliProvider({ binary }).analyzeSlice(request());
+  assert.deepEqual(response.result, ANSWER);
+});
+
+test("Claude error envelopes fail even when the process exits zero", async () => {
+  const binary = fakeCli("claude-error-envelope", 'process.stdout.write(JSON.stringify({ is_error: true, subtype: "error_max_turns", result: "turn budget exhausted" }));');
+  await assert.rejects(() => new ClaudeCliProvider({ binary }).analyzeSlice(request()), /error_max_turns/);
+});
+
 describe("the provider is never granted the repository", () => {
   test("claude is given no directory and no filesystem tool", async () => {
     const provider = new ClaudeCliProvider({ binary: path.join(bin, "claude-ok") });
@@ -144,6 +155,9 @@ describe("the provider is never granted the repository", () => {
     assert.equal(argv[argv.indexOf("--sandbox") + 1], "read-only");
     assert.equal(argv[argv.indexOf("--cd") + 1], req.workDir);
     assert.ok(argv.some((a) => a.startsWith("mcp_servers.contextkit.command=")));
+    assert.ok(argv.includes('mcp_servers.contextkit.default_tools_approval_mode="approve"'));
+    assert.ok(argv.includes(`mcp_servers.contextkit.enabled_tools=${JSON.stringify(req.toolNames)}`));
+    assert.equal(argv[argv.indexOf("--ask-for-approval") + 1], "never");
   });
 
   test("the workspace a provider runs in holds no repository content", async () => {
@@ -228,6 +242,8 @@ describe("disclosure matches what is actually reachable", () => {
     const serverArgs = config.mcpServers.contextkit.args;
     assert.equal(serverArgs[serverArgs.indexOf("--source-exposure") + 1], "static-only",
       "the disclosure describes this setting; the server must actually receive it");
+    assert.equal(serverArgs[serverArgs.indexOf("--provider") + 1], "claude");
+    assert.equal(serverArgs[serverArgs.indexOf("--slice") + 1], request().sliceId);
   });
 });
 

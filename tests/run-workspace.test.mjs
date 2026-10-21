@@ -78,6 +78,25 @@ describe("a rescan does not destroy prior analysis", () => {
 });
 
 describe("layout", () => {
+  test("later slices preserve earlier access reports and retries replace only their own entry", () => {
+    const workspace = new RunWorkspace(fs.mkdtempSync(path.join(os.tmpdir(), "ck-reports-")));
+    const write = (sliceId, calls) => workspace.writeRunReport({
+      repository: "fixture", summary: {},
+      providers: [{ provider: "claude", sliceId, ok: true, durationMs: 10, mcpReport: { calls } }],
+    });
+    try {
+      write("foundation", 5);
+      write("behavior-data", 7);
+      write("behavior-data", 9);
+      const entries = JSON.parse(fs.readFileSync(workspace.runReportPath, "utf8")).providers;
+      assert.deepEqual(entries.map(({ sliceId, calls }) => ({ sliceId, calls })), [
+        { sliceId: "foundation", calls: 5 }, { sliceId: "behavior-data", calls: 9 },
+      ]);
+    } finally {
+      fs.rmSync(workspace.dir, { recursive: true, force: true });
+    }
+  });
+
   test("every artifact the plan names has a single defined path", () => {
     const workspace = new RunWorkspace("/tmp/run_abc");
     const paths = {

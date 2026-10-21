@@ -4,7 +4,7 @@ help:
 	@echo "ContextKit"
 	@echo ""
 	@echo "Commands:"
-	@echo "  make install   Make bin/contextkit executable"
+	@echo "  make install   Install CLI dependencies and enable the commands"
 	@echo "  make demo      Print a demo command"
 	@echo "  make graph-test Validate graph fixtures and rules"
 	@echo "  make scan REPO=<path>  Run static analysis on a repository"
@@ -16,6 +16,7 @@ help:
 	@echo "  make web-build Typecheck, lint, and build the graph UI"
 
 install:
+	npm ci --ignore-scripts
 	chmod +x bin/contextkit
 	@echo "Add this to your shell profile:"
 	@echo "export PATH=$$(pwd)/bin:\$$PATH"

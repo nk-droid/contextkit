@@ -1,55 +1,73 @@
 # Slice 1: foundation
 
-Establish what this repository is and what it is made of. Later slices reference the
-component and external-system ids you create here, so they are frozen once this slice
-validates — choose them carefully and name them for what they do.
+Establish what this repository is and what it is made of. The component and
+external-system ids you create are frozen once this slice validates — every later slice
+references them — so name them for what they do and choose carefully.
 
 ## Produce
 
-**project** — what the repository is for, in one or two sentences a new maintainer would
-find useful. Prefer `documented` basis when the README says it plainly; use `inferred`
-only when you are reading it from structure, and say so.
-
 **components** — the parts a maintainer would name when describing this system. Group by
-responsibility, not by directory depth: `src/analysis/extractors/languages/` and
-`src/analysis/extractors/frameworks/` are probably one component, not two. Every path you
-assign must exist in the inventory.
+responsibility, not directory depth: `extractors/languages/` and `extractors/frameworks/`
+are probably one component, not two. A good list is short enough to hold in mind, usually
+three to eight for a repository of this size. At fifteen you are describing directories.
 
-A good component list is short enough to hold in mind — usually three to eight for a
-repository this size. If you find yourself at fifteen, you are describing directories
-rather than components.
+Each needs `summary` (its architectural role in one or two sentences), `responsibilities`
+(what it owns) and `nonResponsibilities` (adjacent behaviour it does *not* own, which is
+what stops a reader attributing a bug to the wrong place). `paths` must exist in the
+inventory. The id lists — `entrypointIds`, `technologyIds`, `publicInterfaceIds`,
+`stateStoreIds` — reference records from the briefing; leave one empty rather than
+guessing at it.
+
+`lifecycle` is `active` unless the repository shows otherwise. `ownerHint` is null unless
+a CODEOWNERS file or equivalent names someone.
 
 **externalSystems** — systems this repository talks to but does not contain. A dependency
 is not automatically an external system: a JSON parser is a library, a payment API is an
 external system. Look for base URLs, client construction, database bindings, and
-credential names rather than package lists.
+credential names rather than package lists. `required` means the system cannot function
+without it.
 
-**annotations** — enrichment joined onto existing records by id. Useful ones here:
+**primaryUsers / capabilities / nonGoals** — grounded statements, one idea each.
+Capabilities are what the system does for those users. `nonGoals` are things it
+deliberately does not do; leave the array empty rather than inventing them, because a
+fabricated non-goal is worse than a missing one.
 
-- on a file path: `purpose`, `summary`, `importance`, `componentId`
-- on a symbol id: `summary`, `responsibility`, `componentId`
-- on a technology or dependency id: `purpose`, `scope`
+**repositoryRoles** — what kind of repository this is, as plain strings: `service`,
+`library`, `cli`, `web-app`, `monorepo`, `infrastructure`, or similar. More than one is
+normal; a repository holding both a service and its CLI is both.
 
-Annotate what matters. Fifty thin annotations are worth less than eight that explain the
-files someone must read first.
+**styles** — architectural patterns the code actually exhibits, not ones it resembles.
+"Event-driven via a queue" needs a queue. Leave empty if nothing is clear.
+
+**annotations** — enrichment joined onto existing records by id: `purpose` and `summary`
+on the files someone must read first, `componentId` on files and symbols, `purpose` and
+`scope` on technologies, and `purpose`, `affectedComponentIds`, or `fallbackBehavior`
+on dependencies. Do not set `scope` on dependencies. Annotate what matters — eight annotations that
+explain the entry points beat fifty thin ones. **Dependencies are worth annotating**: a
+reader wants to know why a library is here, not just that it is.
+
+## Grounding
+
+Every record carries `grounding` with `basis`, `confidence`, `evidenceIds`, `claimIds`,
+and `notes`. Use `confidence` honestly — `low` on a component you inferred from directory
+names is more useful than false certainty. Put qualifications in `notes` rather than
+weakening the summary.
 
 ## Method
 
-1. Read the briefing, then `contextkit://runs/<run-id>/static` for coverage — know what
-   the scanner could not parse before drawing conclusions from absence.
-2. Read the inventory and the top-level directory map. Form a first guess at components.
+1. Read the briefing, then `contextkit://runs/<run-id>/static` for coverage. Know what the
+   scanner could not parse before drawing conclusions from absence.
+2. Read the inventory and directory map. Form a first guess at components.
 3. Check that guess against entrypoints, routes, and manifests. Where they disagree with
    the directory layout, the entrypoints are usually right.
-4. For each component, find one or two records that demonstrate it and cite their
-   evidence ids.
-5. Call `validate_slice` and fix anything it reports.
+4. For each component, cite evidence that demonstrates it.
+5. Call `validate_slice` and fix what it reports.
 
 ## Watch for
 
-- **Directories are not components.** `src/`, `lib/`, and `utils/` are layout.
-- **Test fixtures are not features.** A route or model defined inside a test fixture
-  belongs to the test suite, not to the API.
-- **Generated code is not authored intent.** Lockfiles and build output describe what a
-  tool produced.
-- **Coverage gaps look like absence.** If the scanner parsed no SQL, do not conclude the
-  system has no schema; record an unknown instead.
+- **Directories are not components.** `src/`, `lib/`, `utils/` are layout.
+- **Test fixtures are not features.** A route defined inside a test fixture belongs to the
+  test suite, not the API.
+- **Generated code is not authored intent.** Lockfiles describe what a tool produced.
+- **Coverage gaps look like absence.** If no SQL was parsed, do not conclude there is no
+  schema — record an unknown.

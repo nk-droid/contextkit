@@ -20,6 +20,7 @@ import {
   checkRunBinding, freezeEntityRegistry, loadPrompts, loadSchema, validateFoundation,
 } from "../src/analysis/slices/foundation.mjs";
 import { lintProviderSchema } from "../src/analysis/slices/schema-lint.mjs";
+import { loadFinalSchema } from "../src/analysis/slices/derive-schema.mjs";
 import { toClaudeSchema } from "../scripts/claude-schema.mjs";
 
 let fixture;
@@ -29,13 +30,24 @@ let evidenceId;
 
 const codes = (result) => result.errors.map((e) => e.code);
 
-/** A minimal result that validates, so each test can break exactly one thing. */
+const grounding = (basis = "inferred", evidenceIds = []) => ({
+  basis, confidence: "medium", evidenceIds, claimIds: [], notes: [],
+});
+
+/**
+ * A minimal result that validates, so each test can break exactly one thing.
+ * Shapes come from the final contract, since the slice schema is cut from it.
+ */
 function validResult(overrides = {}) {
   return {
-    project: { purpose: "A small service.", basis: "documented" },
+    primaryUsers: [], capabilities: [], nonGoals: [], repositoryRoles: [], styles: [],
     components: [{
-      id: "component.api", name: "API", responsibility: "Serves HTTP requests.",
-      kind: "service", paths: ["src"], basis: "observed", evidenceIds: [evidenceId],
+      id: "component.api", name: "API", kind: "service", lifecycle: "active",
+      summary: "Serves HTTP requests.",
+      responsibilities: ["accepting requests"], nonResponsibilities: ["persistence"],
+      paths: ["src"], entrypointIds: [], technologyIds: [],
+      publicInterfaceIds: [], stateStoreIds: [], ownerHint: null,
+      grounding: grounding("observed", [evidenceId]),
     }],
     externalSystems: [],
     annotations: [],
@@ -77,13 +89,21 @@ after(() => {
 });
 
 describe("slice contract", () => {
-  test("the schema forbids extra fields and requires grounding", () => {
+  test("the schema is cut from the final contract, not written alongside it", () => {
+    // The failure this prevents: a slice inventing a parallel vocabulary the assembler
+    // then cannot join. Every array must carry the target it feeds.
     const schema = loadSchema();
     assert.equal(schema.additionalProperties, false);
-    assert.deepEqual(schema.required, ["project", "components", "externalSystems", "annotations"]);
-    assert.deepEqual(schema.$defs.basis.enum, ["observed", "documented", "inferred"]);
-    assert.equal(schema.properties.components.items.properties.id.pattern,
-      "^component\\.[a-z0-9][a-z0-9._-]*$");
+    assert.ok(schema.required.includes("components"));
+    assert.ok(schema.required.includes("externalSystems"));
+
+    const final = loadFinalSchema();
+    const defs = final.$defs;
+    const finalComponents = defs[final.properties.architecture.$ref.split("/").pop()]
+      .properties.components;
+    assert.deepEqual(schema.properties.components.items, finalComponents.items,
+      "the slice must ask for exactly the record the document stores");
+    assert.equal(schema.properties.components["x-target"], "architecture.components");
   });
 
   test("the prompts state the rules the validator enforces", () => {
@@ -124,6 +144,10 @@ describe("slice contract", () => {
 });
 
 describe("a well-formed result validates", () => {
+  test("repository roles are strings, not entities requiring IDs", () => {
+    const result = validateFoundation(validResult({ repositoryRoles: ["library", "cli"] }), snapshot, store);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
   test("accepts a minimal grounded result", () => {
     const result = validateFoundation(validResult(), snapshot, store);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
@@ -131,10 +155,8 @@ describe("a well-formed result validates", () => {
 
   test("accepts a nested path prefix as component ownership", () => {
     const result = validateFoundation(
-      validResult({ components: [{
-        id: "component.api", name: "API", responsibility: "Serves requests.",
-        kind: "service", paths: ["src/app"], basis: "inferred",
-      }] }), snapshot, store);
+      validResult({ components: [{ ...validResult().components[0], paths: ["src/app"] }] }),
+      snapshot, store);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
   });
 
@@ -153,10 +175,8 @@ describe("a well-formed result validates", () => {
 describe("claims about the repository must resolve", () => {
   test("a component owning a path that does not exist is rejected", () => {
     const result = validateFoundation(validResult({
-      components: [{
-        id: "component.ghost", name: "Ghost", responsibility: "Imaginary.",
-        kind: "service", paths: ["src/does-not-exist"], basis: "inferred",
-      }],
+      components: [{ ...validResult().components[0],
+        id: "component.ghost", paths: ["src/does-not-exist"] }],
     }), snapshot, store);
     assert.equal(result.valid, false);
     assert.ok(codes(result).includes("unknown-path"));
@@ -164,24 +184,22 @@ describe("claims about the repository must resolve", () => {
 
   test("a component owning nothing is rejected", () => {
     const result = validateFoundation(validResult({
-      components: [{
-        id: "component.vague", name: "Vague", responsibility: "Unclear.",
-        kind: "service", paths: [], basis: "inferred",
-      }],
+      components: [{ ...validResult().components[0], id: "component.vague", paths: [] }],
     }), snapshot, store);
     assert.ok(codes(result).includes("component-without-paths"));
   });
 
   test("observed claims without evidence are rejected", () => {
     const result = validateFoundation(validResult({
-      project: { purpose: "A service.", basis: "observed", evidenceIds: [] },
+      components: [{ ...validResult().components[0], grounding: grounding("observed", []) }],
     }), snapshot, store);
     assert.ok(codes(result).includes("observed-without-evidence"));
   });
 
   test("invented evidence is rejected", () => {
     const result = validateFoundation(validResult({
-      project: { purpose: "A service.", basis: "observed", evidenceIds: ["ev.invented.0000"] },
+      components: [{ ...validResult().components[0],
+        grounding: grounding("observed", ["ev.invented.0000"]) }],
     }), snapshot, store);
     assert.ok(codes(result).includes("unresolved-evidence"));
   });
@@ -191,19 +209,13 @@ describe("entity ids", () => {
   test("an id reused from the static run is rejected", () => {
     const symbolId = store.document.code.symbols[0].id;
     const result = validateFoundation(validResult({
-      components: [{
-        id: symbolId, name: "Collides", responsibility: "Shadows a symbol.",
-        kind: "service", paths: ["src"], basis: "inferred",
-      }],
+      components: [{ ...validResult().components[0], id: symbolId }],
     }), snapshot, store);
     assert.ok(codes(result).includes("entity-id-collision") || codes(result).includes("bad-entity-id"));
   });
 
   test("a duplicate id inside the slice is rejected", () => {
-    const component = {
-      id: "component.api", name: "API", responsibility: "Serves.",
-      kind: "service", paths: ["src"], basis: "inferred",
-    };
+    const component = validResult().components[0];
     const result = validateFoundation(
       validResult({ components: [component, { ...component, name: "API again" }] }), snapshot, store);
     assert.ok(codes(result).includes("duplicate-entity-id"));
@@ -211,10 +223,7 @@ describe("entity ids", () => {
 
   test("a malformed id is rejected", () => {
     const result = validateFoundation(validResult({
-      components: [{
-        id: "Component One!", name: "Bad", responsibility: "Bad id.",
-        kind: "service", paths: ["src"], basis: "inferred",
-      }],
+      components: [{ ...validResult().components[0], id: "Component One!" }],
     }), snapshot, store);
     assert.ok(codes(result).includes("bad-entity-id"));
   });
@@ -226,7 +235,7 @@ describe("the scanner's measurements stay the scanner's", () => {
     const result = validateFoundation(validResult({
       annotations: [{
         targetId: symbol.id, basis: "inferred",
-        fields: { summary: "fine", lineStart: 1, path: "src/elsewhere.ts" },
+        fields: { summary: "fine", lineStart: "1", path: "src/elsewhere.ts" },
       }],
     }), snapshot, store);
     assert.equal(result.valid, false);
@@ -294,12 +303,13 @@ describe("entity registry freeze", () => {
   test("records every component and external system, sorted", () => {
     const registry = freezeEntityRegistry(validResult({
       components: [
-        { id: "component.b", name: "B", responsibility: "b", kind: "service", paths: ["src"], basis: "inferred" },
-        { id: "component.a", name: "A", responsibility: "a", kind: "library", paths: ["src"], basis: "inferred" },
+        { ...validResult().components[0], id: "component.b" },
+        { ...validResult().components[0], id: "component.a" },
       ],
-      externalSystems: [
-        { id: "external.stripe", name: "Stripe", integrationKind: "payment", basis: "inferred" },
-      ],
+      externalSystems: [{
+        id: "external.stripe", name: "Stripe", kind: "payment", purpose: "payments",
+        protocols: ["https"], required: true, grounding: grounding(),
+      }],
     }), { snapshot });
 
     assert.deepEqual(registry.entityIds, ["component.a", "component.b", "external.stripe"]);

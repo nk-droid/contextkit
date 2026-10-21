@@ -12,6 +12,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { toCodexSchema, decodeCodexResult } from "../../../scripts/codex-schema.mjs";
 import {
   ProviderError, analysisResult, createIsolatedWorkspace, extractJson, mcpServerDescriptor,
   readAccessLog, run,
@@ -41,7 +42,7 @@ export class CodexCliProvider {
 
     const workspace = workDir ?? createIsolatedWorkspace(`codex-${sliceId}`);
     const mcpLog = path.join(workspace, "mcp-access.json");
-    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure });
+    const descriptor = mcpServerDescriptor(runDir, { logPath: mcpLog, sourceExposure, provider: this.name, sliceId });
     const lastMessage = path.join(workspace, "last-message.txt");
 
     const args = [
@@ -54,11 +55,17 @@ export class CodexCliProvider {
       "--output-last-message", lastMessage,
       "-c", `mcp_servers.contextkit.command=${toml(descriptor.command)}`,
       "-c", `mcp_servers.contextkit.args=${JSON.stringify(descriptor.args)}`,
+      // This server only exposes the authorized frozen scan and local analysis
+      // bookkeeping. Grant it tool access without changing global approvals.
+      "-c", 'mcp_servers.contextkit.default_tools_approval_mode="approve"',
     ];
+    if (Array.isArray(request.toolNames)) {
+      args.push("-c", `mcp_servers.contextkit.enabled_tools=${toml(request.toolNames)}`);
+    }
     if (this.model) args.push("--model", this.model);
     if (schema) {
       const schemaPath = path.join(workspace, "output-schema.json");
-      fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2));
+      fs.writeFileSync(schemaPath, JSON.stringify(toCodexSchema(schema), null, 2));
       args.push("--output-schema", schemaPath);
     }
     args.push("-");
@@ -90,7 +97,7 @@ export class CodexCliProvider {
       provider: this.name,
       model: this.model,
       sliceId,
-      result: extractJson(text),
+      result: decodeCodexResult(extractJson(text)),
       raw: text,
       durationMs,
       transcriptPath,

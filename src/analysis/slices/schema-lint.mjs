@@ -37,6 +37,7 @@ export function lintProviderSchema(schema) {
   const add = (rule, pointer, message) => problems.push({ rule, pointer, message });
 
   for (const [pointer, node] of subschemas(schema)) {
+    if (Object.hasOwn(node, "x-target")) add("internal-keyword", pointer, "strip x-target before sending a provider schema");
     // strictTypes: a union type needs allowUnionTypes, which providers do not enable.
     // Write it as anyOf instead - same meaning, accepted everywhere.
     if (Array.isArray(node.type)) {

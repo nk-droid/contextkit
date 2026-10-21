@@ -23,16 +23,24 @@ import path from "node:path";
 import { RunStore } from "../src/analysis/mcp/run-store.mjs";
 import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
 import { StdioTransport } from "../src/analysis/mcp/stdio-transport.mjs";
+import { RunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { readFoundation } from "../src/analysis/slices/cache.mjs";
+import { SLICES } from "../src/analysis/slices/plan-slices.mjs";
+import { buildProtectedSnapshot } from "../src/analysis/merge/protected-fields.mjs";
 
 const args = process.argv.slice(2);
 let runDir = null;
 let logPath = null;
+let provider = null;
+let sliceId = null;
 // Default per the settled retention policy: providers receive static facts only.
 let includeSourceIndex = false;
 
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--log") logPath = args[++i];
   else if (args[i] === "--source-exposure") includeSourceIndex = args[++i] === "cached-source";
+  else if (args[i] === "--provider") provider = args[++i];
+  else if (args[i] === "--slice") sliceId = args[++i];
   else if (!args[i].startsWith("-")) runDir ??= args[i];
 }
 
@@ -60,9 +68,18 @@ if (logPath) {
 
 let server;
 try {
+  const store = RunStore.fromDirectory(path.resolve(runDir), { includeSourceIndex });
+  let registry = null;
+  if (SLICES[sliceId]?.dependsOn.length) {
+    if (!["claude", "codex"].includes(provider)) throw new Error("A provider is required for dependent slice validation");
+    ({ registry } = readFoundation(new RunWorkspace(path.resolve(runDir)), SLICES.foundation, provider, {
+      store, snapshot: buildProtectedSnapshot(store.document),
+    }));
+  }
   server = new ContextKitMcpServer(
-    RunStore.fromDirectory(path.resolve(runDir), { includeSourceIndex }),
-    { onAccess: appendAccess });
+    store,
+    { onAccess: appendAccess, registry, provider,
+      onEvidence: logPath ? (record) => fs.appendFileSync(`${path.resolve(logPath)}.evidence.jsonl`, `${JSON.stringify(record)}\n`) : null });
 } catch (error) {
   process.stderr.write(`contextkit-mcp-stdio: cannot load run from ${runDir}: ${error.message}\n`);
   process.exit(2);

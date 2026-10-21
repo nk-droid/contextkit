@@ -23,10 +23,16 @@ retrying the same one.
 ## What you may not do
 
 The scanner measured the repository. You interpret it. These belong to the scanner and
-must be **absent** from your output — not merely unchanged:
+must be **absent from annotation fields** — not merely unchanged:
 
 paths, file sizes, hashes, line numbers, symbol names, signatures, parent links, call
 endpoints, dependency versions, detector confidence.
+
+When the output schema explicitly requires a scanner fact on a semantic record, copy
+its exact value from the briefing or MCP facts. For example, component paths and endpoint
+`method`, `pathOrName`, and `implementationPath` must use the real inventory/route values.
+Never replace a required path with prose such as "API route implementation". Required
+references and paths are links to measured facts, not new measurements or annotations.
 
 If you believe one of them is wrong, call `report_dispute`. Do not silently correct it,
 and do not restate it as if it were your own finding.
