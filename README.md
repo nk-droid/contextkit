@@ -1,6 +1,20 @@
-# ContextKit
+<p align="center">
+  <img src="docs/assets/icon.svg" alt="ContextKit logo" width="84" height="84">
+</p>
 
-Generate evidence-backed repository context packs and interactive architecture graphs for humans and AI agents.
+<h1 align="center">ContextKit</h1>
+
+<p align="center">
+  Generate evidence-backed repository context packs and interactive architecture graphs for humans and AI agents.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/nk-droid/contextkit?color=ed6b4d&labelColor=153f40"></a>
+  <a href="https://nodejs.org/"><img alt="Node.js 22.13 or later" src="https://img.shields.io/badge/node-%E2%89%A5%2022.13-ed6b4d?logo=nodedotjs&logoColor=white&labelColor=153f40"></a>
+  <a href="#in-claude-code-or-codex"><img alt="Plugin for Claude Code and Codex" src="https://img.shields.io/badge/plugin-Claude%20Code%20%C2%B7%20Codex-ed6b4d?logo=claude&logoColor=white&labelColor=153f40"></a>
+  <a href="#agent-skills"><img alt="Three agent skills" src="https://img.shields.io/badge/agent%20skills-3-ed6b4d?labelColor=153f40"></a>
+  <a href="https://github.com/nk-droid/contextkit/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/nk-droid/contextkit?color=ed6b4d&labelColor=153f40"></a>
+</p>
 
 ![ContextKit demo](docs/assets/contextkit-demo.gif)
 
@@ -199,6 +213,10 @@ Open a graph with `contextkit view path/to/REPO_GRAPH.json`, which starts the ex
 Imported graph documents and repository metadata are persisted through a Cloudflare D1 `DB` binding. Local development uses a SQLite-backed D1 database under `web/.wrangler/state/`; hosted deployments use Cloudflare D1. Imports with the same repository ID replace the stored graph document. No repository is seeded.
 
 ## Component Network
+
+![Component network demo](docs/assets/contextkit-network-demo.gif)
+
+The demo opens AutoPR's network, built in agent mode with the `repo-network` skill, through `contextkit view`. It rotates the orb, filters it down to the architecture, inspects the Intake API, follows its connection to the job queue, searches, and zooms.
 
 `bin/contextkit network` builds `NETWORK_FACTS.json`, the input to the explorer's `/network` page. It is a separate pipeline from `generate --with-graph`, which produces the Atlas's `REPO_GRAPH.json`: a deterministic scanner reads the repository, and Claude Code, Codex, or the agent in your session can add a semantic interpretation on top. How it works, what the export contains, and how it fails are in [docs/network.md](docs/network.md).
 
