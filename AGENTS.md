@@ -39,6 +39,7 @@ Write like a senior engineer onboarding another engineer:
 - `src/network/` - assembles and validates `NETWORK_FACTS.json`.
 - `schemas/` - JSON contracts. `scripts/` - schema converters and the graph validator.
 - `web/` - graph and network explorer.
+- `docs/` - design rationale (`design.md`) and the network pipeline reference (`network.md`).
 - `tests/` - `node --test` suites and fixture repositories.
 
 ## Skills

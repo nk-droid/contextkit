@@ -1,4 +1,4 @@
-.PHONY: help install demo graph-test scan scan-self mcp mcp-probe test install-skills sync-skills web-install web-dev web-build
+.PHONY: help install demo scan scan-self mcp mcp-probe test install-skills sync-skills web-install web-dev web-build
 
 help:
 	@echo "ContextKit"
@@ -6,7 +6,6 @@ help:
 	@echo "Commands:"
 	@echo "  make install   Install CLI dependencies and enable the commands"
 	@echo "  make demo      Print a demo command"
-	@echo "  make graph-test Validate graph fixtures and rules"
 	@echo "  make scan REPO=<path>  Run static analysis on a repository"
 	@echo "  make scan-self Run static analysis on ContextKit itself"
 	@echo "  make mcp RUN=<dir> ARGS='<cmd>'  Inspect a run through the MCP layer"
@@ -14,6 +13,7 @@ help:
 	@echo "  make test      Run every test suite"
 	@echo "  make install-skills  Link the agent skills into ~/.claude/skills and ~/.agents/skills"
 	@echo "  make sync-skills  Refresh the files the repo-graph skill bundles"
+	@echo "  make web-install  Install the graph UI dependencies"
 	@echo "  make web-dev   Start the repository graph UI"
 	@echo "  make web-build Typecheck, lint, and build the graph UI"
 
@@ -27,9 +27,6 @@ demo:
 	@echo "contextkit generate https://github.com/owner/repo --audience human"
 	@echo "contextkit generate ~/work/private-repo --all --output ~/Desktop/repo-context"
 	@echo "contextkit generate ~/work/private-repo --all --with-graph"
-
-graph-test:
-	node --test tests/*.test.mjs
 
 # Deterministic static analysis. Produces STATIC_ANALYSIS.json and the private
 # SOURCE_INDEX.jsonl, and exits non-zero when the artifact fails validation.
