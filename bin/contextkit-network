@@ -8,11 +8,11 @@ import { resolveSource, defaultOutput, toolkitRoot } from "../src/network/source
 
 const usage = `Usage: contextkit network <local-repo|public-git-url|run-dir> [options]
   --output <file>               Export path (default: ContextKit's context-packs directory)
-  --provider static|claude|codex Static directory/symbol network, or semantic analysis (default: static)
+  --provider static|claude|codex|agent Static directory/symbol network, or semantic analysis (default: static)
   --model <id>                  Model for semantic analysis
   --timeout-seconds <n>         Time limit per semantic slice (default: 900)
   --max-turns <n>               Claude turn limit per slice (default: 60)
-  --source-exposure static-only|cached-source (default: static-only)
+  --source-exposure static-only|cached-source (default: static-only; cached-source for agent)
   --allow-untracked             Include local untracked files that Git does not ignore
   --regenerate                  Refresh semantic slices instead of reusing compatible responses
   --work-dir <dir>              Retain scan and semantic artifacts here for resuming
@@ -21,12 +21,15 @@ Import the generated NETWORK_FACTS.json at /network. Unsupported languages retai
 an inferred directory network; extraction limits and missing layers are reported.
 Semantic mode requires an installed, authenticated provider CLI. Provider failures
 leave the previous export intact. Run artifacts include private source excerpts.
+
+--provider agent exports slices the agent in your session already submitted with
+contextkit-analyze --provider agent; it never launches a model.
 `;
 
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) { process.stdout.write(usage); return; }
-  const opts = { provider: "static", sourceExposure: "static-only" };
+  const opts = { provider: "static" };
   const valued = { "--output": "output", "--provider": "provider", "--model": "model", "--source-exposure": "sourceExposure", "--work-dir": "workDir", "--timeout-seconds": "timeoutSeconds", "--max-turns": "maxTurns" };
   let target;
   for (let i = 0; i < args.length; i++) {
@@ -40,9 +43,12 @@ async function main() {
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!target) throw new Error(usage);
-  if (!["static", "claude", "codex"].includes(opts.provider)) throw new Error("Invalid provider; choose static, claude, or codex");
+  if (!["static", "claude", "codex", "agent"].includes(opts.provider)) throw new Error("Invalid provider; choose static, claude, codex, or agent");
+  // Matches contextkit-analyze, so agent results submitted there are reused here.
+  opts.sourceExposure ??= opts.provider === "agent" ? "cached-source" : "static-only";
   if (!["static-only", "cached-source"].includes(opts.sourceExposure)) throw new Error("Invalid source exposure");
-  if (opts.model && opts.provider === "static") throw new Error("--model requires --provider claude or codex");
+  if (opts.model && !["claude", "codex"].includes(opts.provider)) throw new Error("--model requires --provider claude or codex");
+  if (opts.regenerate && opts.provider === "agent") throw new Error("--regenerate does not apply to --provider agent; resubmit slices with contextkit-analyze --provider agent --result");
   for (const key of ["timeoutSeconds", "maxTurns"]) {
     if (opts[key] !== undefined && (!/^\d+$/.test(opts[key]) || Number(opts[key]) < 1 || Number(opts[key]) > 86400)) {
       throw new Error(`${key} must be an integer from 1 to 86400`);

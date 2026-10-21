@@ -340,6 +340,7 @@ ContextKit currently uses deterministic tests for the behavior it can verify aut
 - observed-evidence enforcement
 - duplicate-identifier rejection
 - agent skill integrity and the CLI's use of the skill prompts
+- the agent provider: prepared prompts, logged calls, evidence resolved across separate commands, rejected and valid submissions, and export
 
 Run the automated CLI, scanner, provider, validation, and network checks:
 

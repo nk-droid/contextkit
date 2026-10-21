@@ -97,6 +97,24 @@ export function renderDisclosure(exposure, { provider, model = null, binary = nu
   return lines.join("\n");
 }
 
+/**
+ * The notice for the agent provider. ContextKit does not launch that agent, so it cannot
+ * confine it, and the "not reachable" half of the provider notice would be false here.
+ */
+export function renderAgentDisclosure(exposure) {
+  return [
+    "Analysis by the agent in your session.",
+    "",
+    `  repository   ${exposure.repository}  (run ${exposure.runId})`,
+    `  policy       ${exposure.exposure}`,
+    "",
+    "  ContextKit does not confine this agent: it can read the repository directly, and only",
+    "  the calls it makes through contextkit-mcp are logged. Validation still rejects evidence",
+    "  that is not from this run and any change to scanner-measured values.",
+    "",
+  ].join("\n");
+}
+
 /** What the provider actually reached, from its own access log. */
 export function renderActualAccess(mcpReport) {
   if (!mcpReport) {

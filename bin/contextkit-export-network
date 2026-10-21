@@ -9,7 +9,7 @@ try {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
-      console.log("Usage: contextkit-export-network <run-dir> --output <file> [--provider claude|codex|static]");
+      console.log("Usage: contextkit-export-network <run-dir> --output <file> [--provider claude|codex|agent|static]");
       process.exit(0);
     }
     if (["--output", "--provider"].includes(arg)) {
@@ -19,7 +19,7 @@ try {
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!target || !output) throw new Error("Expected <run-dir> --output <file>; use --help");
-  if (!["static", "claude", "codex"].includes(provider)) throw new Error("Invalid provider");
+  if (!["static", "claude", "codex", "agent"].includes(provider)) throw new Error("Invalid provider");
   publishNetwork(assembleNetwork(new RunWorkspace(path.resolve(target)), { provider }), path.resolve(output));
   console.log(`Wrote ${path.resolve(output)}`);
 } catch (error) { console.error(`contextkit-export-network: ${error.message}`); process.exitCode = 1; }

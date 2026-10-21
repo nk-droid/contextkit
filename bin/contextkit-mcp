@@ -11,11 +11,18 @@
  *   contextkit-mcp <run-dir> resources
  *   contextkit-mcp <run-dir> read <uri-or-section>
  *   contextkit-mcp <run-dir> tools
- *   contextkit-mcp <run-dir> call <tool> '<json-params>'
+ *   contextkit-mcp <run-dir> call <tool> '<json-params>' | @<file>
  *   contextkit-mcp <run-dir> probe
+ *
+ * Options, for an agent working a slice through these commands (providers/agent.mjs):
+ *   --provider <name> --slice <id>   serve that slice; a dependent slice loads the
+ *                                    provider's frozen foundation, as contextkit-mcp-stdio does
+ *   --log <file>                     append calls and resolved evidence; with --provider
+ *                                    agent it defaults to the slice's log in the run
  *
  * A run directory is whatever contextkit-scan --out wrote.
  */
+import fs from "node:fs";
 import path from "node:path";
 import { RunStore } from "../src/analysis/mcp/run-store.mjs";
 import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
@@ -23,17 +30,28 @@ import {
   CooperativeProvider, FabricatingProvider, GreedyProvider, OverwritingProvider,
   PathProbingProvider, SelfCertifyingProvider,
 } from "../src/analysis/mcp/fake-provider.mjs";
+import { buildProtectedSnapshot } from "../src/analysis/merge/protected-fields.mjs";
+import { AGENT, agentPaths } from "../src/analysis/providers/agent.mjs";
+import { RunWorkspace } from "../src/analysis/run-workspace.mjs";
+import { readFoundation } from "../src/analysis/slices/cache.mjs";
+import { SLICES, getSlice } from "../src/analysis/slices/plan-slices.mjs";
 
 const USAGE = [
-  "usage: contextkit-mcp <run-dir> <command> [args]",
+  "usage: contextkit-mcp <run-dir> <command> [args] [options]",
   "",
   "commands:",
   "  summary                 what this run contains",
   "  resources               list readable resources",
   "  read <uri|section>      read a resource ('static', or a full contextkit:// uri)",
   "  tools                   list callable tools",
-  "  call <tool> '<json>'    call a tool with JSON params",
+  "  call <tool> '<json>'    call a tool with JSON params, or @<file> to read them from a file",
   "  probe                   run the fake providers and show what was denied",
+  "",
+  "options:",
+  "  --provider <name>       provider whose frozen foundation a dependent slice uses",
+  "  --slice <id>            the slice being worked; a dependent slice needs --provider",
+  "  --log <file>            append calls and resolved evidence (with --provider agent,",
+  "                          defaults to the slice's log in the run)",
   "",
   "examples:",
   "  contextkit-mcp ./run summary",
@@ -43,7 +61,21 @@ const USAGE = [
   "",
 ].join("\n");
 
-const [runDir, command, ...rest] = process.argv.slice(2);
+// Options may come after the command; everything else is positional.
+const options = {};
+const positional = [];
+for (let i = 2; i < process.argv.length; i += 1) {
+  const arg = process.argv[i];
+  if (["--provider", "--slice", "--log"].includes(arg)) {
+    const value = process.argv[++i];
+    if (!value) {
+      process.stderr.write(`${arg} needs a value\n`);
+      process.exit(2);
+    }
+    options[arg.slice(2)] = value;
+  } else positional.push(arg);
+}
+const [runDir, command, ...rest] = positional;
 
 if (!runDir || !command || runDir === "-h" || runDir === "--help") {
   process.stdout.write(USAGE);
@@ -59,7 +91,58 @@ try {
   process.exit(2);
 }
 
-const server = new ContextKitMcpServer(store);
+/**
+ * Append calls and resolved evidence to the files contextkit-mcp-stdio writes, so work
+ * spread over many short commands leaves the same record as one provider session.
+ */
+function openLog(file) {
+  const resolved = path.resolve(file);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const evidenceFile = `${resolved}.evidence.jsonl`;
+  return {
+    resolved: fs.existsSync(evidenceFile)
+      ? fs.readFileSync(evidenceFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+      : [],
+    access: (entry) => fs.appendFileSync(`${resolved}l`, `${JSON.stringify(entry)}\n`),
+    evidence: (record) => fs.appendFileSync(evidenceFile, `${JSON.stringify(record)}\n`),
+  };
+}
+
+// A slice session serves what contextkit-mcp-stdio would for that slice, so an agent
+// working through these commands meets the same registry and leaves the same log.
+let registry = null;
+let logPath = options.log ?? null;
+if (options.slice) {
+  const slice = getSlice(options.slice);
+  if (!slice) {
+    process.stderr.write(`unknown slice ${options.slice}; have ${Object.keys(SLICES).join(", ")}\n`);
+    process.exit(2);
+  }
+  const workspace = new RunWorkspace(path.resolve(runDir));
+  if (options.provider === AGENT) logPath ??= agentPaths(workspace, slice).log;
+  if (slice.dependsOn.length) {
+    if (!options.provider) {
+      process.stderr.write(`${slice.id} builds on foundation; pass --provider to say whose\n`);
+      process.exit(2);
+    }
+    try {
+      ({ registry } = readFoundation(workspace, SLICES.foundation, options.provider, {
+        store, snapshot: buildProtectedSnapshot(store.document),
+      }));
+    } catch (error) {
+      process.stderr.write(`cannot load the frozen foundation: ${error.message}\n`);
+      process.exit(2);
+    }
+  }
+}
+
+const log = logPath ? openLog(logPath) : null;
+const server = new ContextKitMcpServer(store, {
+  registry, provider: options.provider ?? null, onAccess: log?.access, onEvidence: log?.evidence,
+});
+// Evidence resolved by earlier commands survives only in the log. Without it here,
+// validate_slice would reject ids this session resolved legitimately.
+for (const record of log?.resolved ?? []) server.requestedEvidence.set(record.id, record);
 const print = (value) => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 
 /** Denials are the interesting output here, so they print loudly and set the exit code. */
@@ -127,7 +210,8 @@ switch (command) {
     let params = {};
     if (raw) {
       try {
-        params = JSON.parse(raw);
+        // @file keeps large params, such as a validate_slice candidate, off the command line.
+        params = JSON.parse(raw.startsWith("@") ? fs.readFileSync(raw.slice(1), "utf8") : raw);
       } catch (error) {
         process.stderr.write(`params must be JSON: ${error.message}\n`);
         process.exit(2);

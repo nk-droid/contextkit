@@ -4,12 +4,17 @@
  *
  * Usage:
  *   contextkit-analyze <run-dir|repository> [--slice foundation]
- *                      [--provider claude|codex] [--model <id>] [--out <dir>]
+ *                      [--provider claude|codex|agent] [--model <id>] [--out <dir>]
  *                      [--source-exposure static-only|cached-source] [--dry-run]
+ *                      [--prepare | --result <file>]
  *
  * The result is validated before it is stored, and stored as a candidate either way -
  * an invalid result is evidence about the prompt and is more useful kept than discarded.
  * Nothing here writes to the static artifact.
+ *
+ * With --provider agent, the agent running a ContextKit skill does the slice itself:
+ * --prepare writes the prompt and schema it works from, and --result submits its answer
+ * to the same storage and validation as any other provider.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -18,13 +23,16 @@ import { RunStore } from "../src/analysis/mcp/run-store.mjs";
 import { ContextKitMcpServer } from "../src/analysis/mcp/server.mjs";
 import { ensureRunWorkspace } from "../src/analysis/run-workspace.mjs";
 import { buildProtectedSnapshot } from "../src/analysis/merge/protected-fields.mjs";
+import {
+  AGENT, AgentResultProvider, agentInstructions, agentPaths,
+} from "../src/analysis/providers/agent.mjs";
 import { ClaudeCliProvider } from "../src/analysis/providers/claude-cli.mjs";
 import { CodexCliProvider } from "../src/analysis/providers/codex-cli.mjs";
 import {
-  describeExposure, renderActualAccess, renderDisclosure,
+  describeExposure, renderActualAccess, renderAgentDisclosure, renderDisclosure,
 } from "../src/analysis/providers/disclosure.mjs";
 import { SLICES, buildAnalysisPlan, getSlice } from "../src/analysis/slices/plan-slices.mjs";
-import { buildSlicePrompt } from "../src/analysis/slices/slice-kit.mjs";
+import { ROOT, buildSlicePrompt } from "../src/analysis/slices/slice-kit.mjs";
 import {
   freezeEntityRegistry,
 } from "../src/analysis/slices/foundation.mjs";
@@ -35,10 +43,12 @@ let sliceName = "foundation";
 let providerName = "claude";
 let model = null;
 let outOverride = null;
-let sourceExposure = "static-only";
+let sourceExposure = null;
 let dryRun = false;
 let revalidate = false;
 let reuse = false;
+let prepare = false;
+let resultFile = null;
 let timeoutSeconds = 900;
 let maxTurns = 60;
 
@@ -52,12 +62,15 @@ for (let i = 0; i < args.length; i += 1) {
   else if (arg === "--dry-run") dryRun = true;
   else if (arg === "--revalidate") revalidate = true;
   else if (arg === "--reuse") reuse = true;
+  else if (arg === "--prepare") prepare = true;
+  else if (arg === "--result") resultFile = args[++i];
   else if (arg === "--timeout-seconds") timeoutSeconds = Number(args[++i]);
   else if (arg === "--max-turns") maxTurns = Number(args[++i]);
   else if (arg === "-h" || arg === "--help") {
     process.stdout.write("usage: contextkit-analyze <run-dir|repository> [--slice foundation] "
-      + "[--provider claude|codex] [--model <id>] [--out <dir>] [--dry-run] [--revalidate] [--reuse] "
-      + "[--source-exposure static-only|cached-source] [--timeout-seconds <n>] [--max-turns <n>]\n");
+      + "[--provider claude|codex|agent] [--model <id>] [--out <dir>] [--dry-run] [--revalidate] [--reuse] "
+      + "[--source-exposure static-only|cached-source] [--timeout-seconds <n>] [--max-turns <n>] "
+      + "[--prepare | --result <file>]\n");
     process.exit(0);
   } else if (!arg.startsWith("-") && !target) target = arg;
   else throw new Error(`Unknown argument: ${arg}`);
@@ -67,8 +80,14 @@ if (!target) {
   process.stderr.write("usage: contextkit-analyze <run-dir|repository> [--slice foundation]\n");
   process.exit(2);
 }
-if (!["claude", "codex"].includes(providerName)) throw new Error("provider must be claude or codex");
+if (!["claude", "codex", AGENT].includes(providerName)) throw new Error("provider must be claude, codex, or agent");
+// The agent can read the repository anyway, so withholding cached source protects nothing,
+// and cached source is what lets it resolve new evidence.
+sourceExposure ??= providerName === AGENT ? "cached-source" : "static-only";
 if (!["static-only", "cached-source"].includes(sourceExposure)) throw new Error("invalid source exposure");
+if (providerName === AGENT && model) throw new Error("--model is for claude and codex; the agent is whoever runs the skill");
+if ((prepare || resultFile) && providerName !== AGENT) throw new Error("--prepare and --result are for --provider agent");
+if (prepare && resultFile) throw new Error("use --prepare or --result, not both");
 for (const [name, value] of Object.entries({ timeoutSeconds, maxTurns })) {
   if (!Number.isInteger(value) || value < 1 || value > 86400) throw new Error(`${name} must be an integer from 1 to 86400`);
 }
@@ -132,8 +151,13 @@ if (reuse && fs.existsSync(responseFile)) {
   process.stdout.write(`Refreshing ${slice.id}: cached result is incompatible with this request\n`);
 }
 
-const { systemPrompt, prompt: initialPrompt, briefing } = buildSlicePrompt(slice, store, { registry });
-const prompt = initialPrompt + retryFeedback;
+const agentFiles = providerName === AGENT ? agentPaths(workspace, slice) : null;
+const built = buildSlicePrompt(slice, store, { registry });
+const { briefing } = built;
+const systemPrompt = agentFiles
+  ? `${built.systemPrompt}\n\n${agentInstructions({ runDir: workspace.dir, slice, files: agentFiles })}`
+  : built.systemPrompt;
+const prompt = built.prompt + retryFeedback;
 const schema = slice.loadSchema();
 
 // The plan is written before anything is contacted, so a run can be audited or resumed.
@@ -145,8 +169,12 @@ process.stdout.write(`slice ${slice.id}  contract v${slice.contractVersion}  pro
   + `${registry ? `  (registry: ${registry.entityIds.length} entities)` : ""}\n`);
 process.stdout.write(`run ${summary.runId}  (${summary.repository}, ${summary.files} files)\n\n`);
 
+const disclosure = () => (providerName === AGENT
+  ? renderAgentDisclosure(describeExposure(store))
+  : renderDisclosure(describeExposure(store), { provider: providerName, model }));
+
 if (dryRun) {
-  process.stdout.write(renderDisclosure(describeExposure(store), { provider: providerName, model }));
+  process.stdout.write(disclosure());
   // Briefings differ per slice, so report whatever this one holds rather than assuming.
   const briefingBytes = Buffer.byteLength(JSON.stringify(briefing));
   process.stdout.write("  briefing:\n");
@@ -196,9 +224,53 @@ if (revalidate) {
   process.exit(outcomeValidation.valid ? 0 : 1);
 }
 
-const provider = providerName === "codex"
-  ? new CodexCliProvider({ model, timeoutMs: timeoutSeconds * 1000 })
-  : new ClaudeCliProvider({ model, maxTurns, timeoutMs: timeoutSeconds * 1000 });
+const writeRequest = () => workspace.writeSliceArtifact(slice.order, slice.id, providerName, "request", {
+  sliceId: slice.id, promptSetVersion: slice.promptSetVersion, schemaHash: slice.schemaHash(),
+  provider: providerName, model, runId: summary.runId, sourceExposure,
+  timeoutSeconds, maxTurns,
+  systemPrompt, prompt, schema, toolNames,
+});
+
+// The agent works between these two calls, in its own session: --prepare hands it the
+// prompt and schema, and --result brings its answer back through the path below.
+if (providerName === AGENT) {
+  const analyze = `node "${path.join(ROOT, "bin/contextkit-analyze")}" "${workspace.dir}" --slice ${slice.id} --provider agent`;
+  if (prepare) {
+    writeRequest();
+    fs.writeFileSync(agentFiles.prompt, `${systemPrompt}\n\n---\n\n${prompt}\n`);
+    fs.writeFileSync(agentFiles.schema, JSON.stringify(schema, null, 2));
+    process.stdout.write(disclosure());
+    process.stdout.write([
+      "",
+      `prepared ${slice.id} for the agent`,
+      `  prompt   ${agentFiles.prompt}`,
+      `  schema   ${agentFiles.schema}`,
+      `  result   ${agentFiles.result}`,
+      "",
+      "Read the prompt in full, write the result JSON, then submit it:",
+      `  ${analyze} --result "${agentFiles.result}"`,
+      "",
+    ].join("\n"));
+    process.exit(0);
+  }
+  if (!resultFile) {
+    process.stderr.write([
+      `contextkit-analyze: no valid ${slice.id} result from the agent for this run`,
+      `  prepare: ${analyze} --prepare`,
+      `  submit:  ${analyze} --result <file>`,
+      "",
+    ].join("\n"));
+    process.exit(2);
+  }
+}
+
+const provider = providerName === AGENT
+  ? new AgentResultProvider({
+    resultPath: path.resolve(resultFile), logPath: agentFiles.log, preparedPath: agentFiles.prompt,
+  })
+  : providerName === "codex"
+    ? new CodexCliProvider({ model, timeoutMs: timeoutSeconds * 1000 })
+    : new ClaudeCliProvider({ model, maxTurns, timeoutMs: timeoutSeconds * 1000 });
 
 const version = await provider.available();
 if (!version) {
@@ -206,16 +278,12 @@ if (!version) {
   process.exit(2);
 }
 process.stdout.write(`### ${providerName} (${version})\n\n`);
-process.stdout.write(renderDisclosure(describeExposure(store), { provider: providerName, model }));
+process.stdout.write(disclosure());
 
-workspace.writeSliceArtifact(slice.order, slice.id, providerName, "request", {
-  sliceId: slice.id, promptSetVersion: slice.promptSetVersion, schemaHash: slice.schemaHash(),
-  provider: providerName, model, runId: summary.runId, sourceExposure,
-  timeoutSeconds, maxTurns,
-  systemPrompt, prompt, schema, toolNames,
-});
+writeRequest();
 
-const sandbox = workspace.createProviderSandbox(providerName);
+// The agent is already running in its own session; only launched providers get a sandbox.
+const sandbox = providerName === AGENT ? null : workspace.createProviderSandbox(providerName);
 let outcome;
 const invocationStartedAt = Date.now();
 const progress = setInterval(() => {
