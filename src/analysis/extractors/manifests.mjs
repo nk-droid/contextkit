@@ -12,7 +12,7 @@ import path from "node:path";
 import { detectionId } from "../stable-ids.mjs";
 import { ExtractorRun } from "./extractor.mjs";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 function lineOf(text, needle, fromIndex = 0) {
   const at = text.indexOf(needle, fromIndex);
@@ -117,38 +117,52 @@ function npmExtractor(ctx) {
  * anywhere else are not dependencies however much they look like one, which is why this
  * tracks the section header rather than scanning for arrays.
  *
- * Yields `{ group, body }`, where `group` is null for the runtime list and the raw array
- * text is left for the caller to pick requirement strings out of.
+ * Yields quoted requirement strings with exact source offsets. Quotes in environment
+ * markers, extras in square brackets and comments must not terminate the array.
  */
 function* dependencyArrays(text) {
   const lines = text.split("\n");
   let section = "";
+  let offset = 0;
+  let consumedThrough = -1;
 
   for (let i = 0; i < lines.length; i += 1) {
+    const lineOffset = offset;
+    offset += lines[i].length + 1;
+    if (lineOffset <= consumedThrough) continue;
     const header = /^\s*\[\s*([^\]]+?)\s*\]\s*$/.exec(lines[i]);
     if (header) { section = header[1]; continue; }
 
     const assignment = /^\s*["']?([A-Za-z0-9_.-]+)["']?\s*=\s*\[(.*)$/.exec(lines[i]);
     if (!assignment) continue;
 
-    const [, key, rest] = assignment;
+    const [, key] = assignment;
     const isRuntime = section === "project" && key === "dependencies";
     const isGroup = section === "project.optional-dependencies" || section === "dependency-groups";
     if (!isRuntime && !isGroup) continue;
 
-    let body = rest;
-    if (!rest.includes("]")) {
-      // Multi-line: collect through the closing bracket.
-      const parts = [rest];
-      let j = i + 1;
-      for (; j < lines.length && !/^\s*\]/.test(lines[j]); j += 1) parts.push(lines[j]);
-      body = parts.join("\n");
-      i = j;
-    } else {
-      body = rest.slice(0, rest.lastIndexOf("]"));
+    const start = lineOffset + lines[i].indexOf("[") + 1;
+    const tokens = /"(?:\\[\s\S]|[^"\\])*"|'[^']*'|#[^\n]*|[\[\]{}]/g;
+    tokens.lastIndex = start;
+    let depth = 1;
+    const entries = [];
+    for (let token; (token = tokens.exec(text));) {
+      const raw = token[0];
+      if (raw.startsWith("#")) continue;
+      if (raw === "[" || raw === "{") depth += 1;
+      else if (raw === "]" || raw === "}") {
+        depth -= 1;
+        if (!depth) { consumedThrough = token.index; break; }
+      } else if (depth === 1) {
+        let value = raw.slice(1, -1);
+        if (raw.startsWith('"')) {
+          try { value = JSON.parse(raw); } catch { /* preserve unsupported TOML escapes */ }
+        }
+        entries.push({ value, offset: token.index });
+      }
     }
 
-    yield { group: isRuntime ? null : key, body };
+    yield { group: isRuntime ? null : key, section, entries };
   }
 }
 
@@ -196,10 +210,12 @@ function pythonExtractor(ctx) {
       // read, and the section header decides which. Arrays may be inline or multi-line;
       // both spellings are common.
       for (const block of dependencyArrays(text)) {
-        for (const dep of block.body.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)\s*([^"']*)["']/g)) {
-          const line = lineOf(text, dep[0]);
+        for (const entry of block.entries) {
+          const dep = /^([A-Za-z0-9][A-Za-z0-9._-]*)(.*)$/s.exec(entry.value);
+          if (!dep) continue;
+          const line = text.slice(0, entry.offset).split("\n").length;
           out.dependencies.push({
-            id: detectionId("dep", relPath, block.group ?? "runtime", dep[1]),
+            id: detectionId("dep", relPath, block.section, block.group ?? "runtime", dep[1], dep[2].trim()),
             detector: run.name, confidence: "high",
             evidenceIds: [line ? ctx.evidence.add({
               path: relPath, lineStart: line, lineEnd: line,
@@ -220,7 +236,7 @@ function pythonExtractor(ctx) {
         const match = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*([<>=!~].*)?\s*$/.exec(line);
         if (!match || line.trim().startsWith("#")) continue;
         out.dependencies.push({
-          id: detectionId("dep", relPath, "runtime", match[1]),
+          id: detectionId("dep", relPath, "runtime", match[1], (match[2] ?? "").trim()),
           detector: run.name, confidence: "high", evidenceIds: [evidence].filter(Boolean),
           name: match[1], ecosystem: "pypi", kind: "runtime",
           versionConstraint: (match[2] ?? "").trim() || null, direct: true, sourcePath: relPath,
@@ -230,6 +246,15 @@ function pythonExtractor(ctx) {
     }
     run.parsed();
   }
+  // Repeating an identical requirement is one fact; different environment markers
+  // or constraints remain distinct records. Keep all supporting source locations.
+  const dependencies = new Map();
+  for (const record of out.dependencies) {
+    const previous = dependencies.get(record.id);
+    if (previous) previous.evidenceIds = [...new Set([...previous.evidenceIds, ...record.evidenceIds])];
+    else dependencies.set(record.id, record);
+  }
+  out.dependencies = [...dependencies.values()];
   return { records: out, provenance: run.finish() };
 }
 
@@ -243,24 +268,35 @@ function makeExtractor(ctx) {
     if (!/^(GNU)?[Mm]akefile$/.test(path.basename(relPath))) continue;
     run.consider();
     const lines = text.split("\n");
+    const targets = new Map();
     lines.forEach((line, i) => {
-      const match = /^([a-zA-Z0-9][a-zA-Z0-9._-]*)\s*:(?!=)/.exec(line);
-      if (!match || match[1] === ".PHONY") return;
+      const match = /^([a-zA-Z0-9][a-zA-Z0-9._-]*(?:[ \t]+[a-zA-Z0-9][a-zA-Z0-9._-]*)*)\s*:(?!=)/.exec(line);
+      if (!match) return;
       const body = [];
       for (let j = i + 1; j < lines.length && /^\t/.test(lines[j]); j += 1) body.push(lines[j].trim());
-      const evId = ctx.evidence.add({
-        path: relPath, lineStart: i + 1, lineEnd: i + 1 + body.length,
-        detail: `declares the make target ${match[1]}`, sourceText: text, region: `target-${match[1]}`,
-      });
+      for (const name of match[1].split(/\s+/)) {
+        const evId = ctx.evidence.add({
+          path: relPath, lineStart: i + 1, lineEnd: i + 1 + body.length,
+          detail: `declares the make target ${name}`, sourceText: text, region: `target-${name}-${i + 1}`,
+        });
+        const target = targets.get(name) ?? { evidenceIds: [], recipes: new Set() };
+        if (evId) target.evidenceIds.push(evId);
+        if (body.length) target.recipes.add(body.join(" && "));
+        targets.set(name, target);
+      }
+    });
+    for (const [name, target] of targets) {
+      if (target.recipes.size > 1) run.warn(`Multiple recipes for ${relPath}:${name}; raw command left unset.`);
+      const rawCommand = target.recipes.size === 1 ? [...target.recipes][0] : null;
       out.commands.push({
-        id: detectionId("cmd", relPath, match[1]),
-        detector: run.name, confidence: "high", evidenceIds: [evId].filter(Boolean),
-        name: match[1], command: `make ${match[1]}`, rawCommand: body.join(" && ") || null,
-        category: categorizeCommand(match[1], body.join(" ")),
-        workingDirectory: ".", sourcePath: relPath,
+        id: detectionId("cmd", relPath, name),
+        detector: run.name, confidence: "high", evidenceIds: [...new Set(target.evidenceIds)],
+        name, command: `make ${name}`, rawCommand,
+        category: categorizeCommand(name, rawCommand ?? ""),
+        workingDirectory: path.dirname(relPath), sourcePath: relPath,
       });
       run.emitted();
-    });
+    }
     run.parsed();
   }
   return { records: out, provenance: run.finish() };

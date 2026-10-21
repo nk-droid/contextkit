@@ -9,8 +9,9 @@
 import path from "node:path";
 import { detectionId } from "../../stable-ids.mjs";
 import { ExtractorRun } from "../extractor.mjs";
+import { buildCodeMask, matchesInCode } from "../source-text.mjs";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 /** wrangler config: bindings are declared infrastructure, not inferred. */
 export function detectPlatform(ctx, files) {
@@ -95,32 +96,33 @@ export function detectDataContracts(ctx, symbols) {
   const contracts = [];
 
   for (const [relPath, text] of ctx.contents) {
-    if (/\bz\.object\s*\(/.test(text)) {
-      for (const match of text.matchAll(/\b(?:export\s+)?const\s+([A-Za-z_]\w*)\s*=\s*z\.object\s*\(/g)) {
+    const mask = buildCodeMask(text, relPath);
+    if (/\.[cm]?[jt]sx?$/.test(relPath) && /\bz\.object\s*\(/.test(text)) {
+      for (const match of matchesInCode(text, /\b(?:export\s+)?const\s+([A-Za-z_]\w*)\s*=\s*z\.object\s*\(/g, mask)) {
         run.consider();
         const line = text.slice(0, match.index).split("\n").length;
         const evId = ctx.evidence.add({
           path: relPath, lineStart: line, lineEnd: line,
-          detail: `declares the zod schema ${match[1]}`, sourceText: text, region: `zod-${match[1]}`,
+          detail: `declares the zod schema ${match[1]}`, sourceText: text, region: `zod-${match[1]}-${match.index}`,
         });
         contracts.push({
-          id: detectionId("contract", relPath, match[1]),
+          id: detectionId("contract", relPath, match[1], match.index),
           detector: run.name, confidence: "medium", evidenceIds: [evId].filter(Boolean),
           name: match[1], kind: "zod-schema", definitionPath: relPath, lineStart: line,
         });
         run.emitted();
       }
     }
-    if (/\bBaseModel\b/.test(text)) {
-      for (const match of text.matchAll(/class\s+([A-Za-z_]\w*)\s*\([^)]*\bBaseModel\b[^)]*\)/g)) {
+    if (relPath.endsWith(".py") && /\bBaseModel\b/.test(text)) {
+      for (const match of matchesInCode(text, /\bclass\s+([A-Za-z_]\w*)\s*\([^)]*\bBaseModel\b[^)]*\)/g, mask)) {
         run.consider();
         const line = text.slice(0, match.index).split("\n").length;
         const evId = ctx.evidence.add({
           path: relPath, lineStart: line, lineEnd: line,
-          detail: `declares the pydantic model ${match[1]}`, sourceText: text, region: `pydantic-${match[1]}`,
+          detail: `declares the pydantic model ${match[1]}`, sourceText: text, region: `pydantic-${match[1]}-${match.index}`,
         });
         contracts.push({
-          id: detectionId("contract", relPath, match[1]),
+          id: detectionId("contract", relPath, match[1], match.index),
           detector: run.name, confidence: "medium", evidenceIds: [evId].filter(Boolean),
           name: match[1], kind: "pydantic-model", definitionPath: relPath, lineStart: line,
         });

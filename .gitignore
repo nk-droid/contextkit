@@ -8,6 +8,14 @@ context-packs/
 tmp/
 *.log
 
+# Scanner output. --out takes any directory, so these are ignored by artifact name
+# wherever they land. SOURCE_INDEX.jsonl carries raw source content and is private by
+# design: it must never be committed, here or into a scanned repository.
+STATIC_ANALYSIS.json
+SOURCE_INDEX.jsonl
+run/
+runs/
+
 node_modules/
 __pycache__/
 .pytest_cache/

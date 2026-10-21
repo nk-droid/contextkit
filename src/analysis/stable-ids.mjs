@@ -37,18 +37,26 @@ function compose(prefix, ...parts) {
   return id;
 }
 
+// Slugs are display labels, not identities: case, punctuation and truncation are
+// lossy. Hash the complete, separately encoded parts and bound the readable prefix
+// so every generated ID (including the `ep.` wrapper) fits the 160-character contract.
+function identified(prefix, labels, identity) {
+  const readable = compose(prefix, ...labels).slice(0, 136).replace(/[._-]+$/, "");
+  return `${readable}.${shortHash(JSON.stringify(identity), 16)}`;
+}
+
 /**
  * Evidence ids follow the shape recommended by the analysis plan:
- *   ev.<path-slug>.<symbol-or-region-slug>.<excerpt-hash-prefix>
- * The excerpt hash keeps the id stable while the supporting content is unchanged
- * and forces a new id the moment the cited text changes.
+ *   ev.<path-slug>.<symbol-or-region-slug>.<identity-hash-prefix>
+ * The hash includes the full path, region and excerpt, so truncated display labels
+ * cannot merge evidence from different files with identical supporting text.
  */
 export function evidenceId(path, region, normalizedExcerpt) {
-  return compose("ev", slug(path, 70), slug(region || "region", 40), shortHash(normalizedExcerpt, 8));
+  return identified("ev", [slug(path, 70), slug(region || "region", 40)], [path, region || "region", normalizedExcerpt]);
 }
 
 export function symbolId(path, qualifiedName) {
-  return compose("sym", slug(path, 70), slug(qualifiedName, 60));
+  return identified("sym", [slug(path, 70), slug(qualifiedName, 60)], [path, qualifiedName]);
 }
 
 export function callId(callerId, calleeId, index) {
@@ -60,7 +68,7 @@ export function chunkId(content) {
 }
 
 export function detectionId(kind, ...parts) {
-  return compose(kind, ...parts.map((p) => slug(p, 50)));
+  return identified(kind, parts.map((p) => slug(p, 50)), parts);
 }
 
 /** Stable ordering so serialized arrays never depend on traversal order. */

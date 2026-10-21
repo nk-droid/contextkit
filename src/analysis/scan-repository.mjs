@@ -25,7 +25,7 @@ import { detectConfiguration, detectObservability, detectTestSuites } from "./ex
 import { detectDataContracts, detectPlatform, rollUpTechnologies } from "./extractors/frameworks/platform.mjs";
 
 export const SCANNER_NAME = "contextkit-static";
-export const SCANNER_VERSION = "0.1.0";
+export const SCANNER_VERSION = "0.2.0";
 
 /**
  * Deterministic retention, ordered by the priorities in the analysis plan. A model
@@ -186,7 +186,9 @@ export function scanRepository(rootInput, options = {}) {
   const completedAt = new Date();
   const document = {
     schemaVersion: 1,
-    artifactId: `static.${slug(identity.name)}.${shortHash(fingerprint, 12)}`,
+    // A rescan with new ID/extraction rules must not reuse semantic responses bound
+    // to the previous scanner's facts, even when the source tree is unchanged.
+    artifactId: `static.${slug(identity.name)}.${shortHash(JSON.stringify([fingerprint, configurationFingerprint]), 16)}`,
     scanner: {
       name: SCANNER_NAME,
       version: SCANNER_VERSION,

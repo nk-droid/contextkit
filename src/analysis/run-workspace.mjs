@@ -150,21 +150,16 @@ export function ensureRunWorkspace(input, { workRoot = null, quiet = true } = {}
     return { workspace: new RunWorkspace(destination), scanned: false, adoptedFrom: target };
   }
 
-  const looksLikeRepository = fs.existsSync(path.join(target, ".git"))
-    || fs.readdirSync(target).some(
-      (f) => ["package.json", "pyproject.toml", "Makefile", "go.mod", "Cargo.toml"].includes(f));
-  if (!looksLikeRepository) {
-    throw new Error(
-      `${target} holds no STATIC_ANALYSIS.json and does not look like a repository`);
-  }
+  if (!fs.statSync(target).isDirectory()) throw new Error(`not a directory: ${target}`);
 
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "contextkit-staging-"));
   const scanArgs = [SCAN_BIN, target, "--out", staging];
   if (quiet) scanArgs.push("--quiet");
   const scan = spawnSync(process.execPath, scanArgs, { stdio: ["ignore", "inherit", "inherit"] });
   if (scan.status !== 0) {
-    fs.rmSync(staging, { recursive: true, force: true });
-    throw new Error("scan failed");
+    // Keep failed artifacts inspectable; deleting them hid every diagnostic behind
+    // a count when the network command used --quiet.
+    throw new Error(`scan failed; diagnostic artifacts retained in ${staging}`);
   }
 
   const document = JSON.parse(fs.readFileSync(path.join(staging, "STATIC_ANALYSIS.json"), "utf8"));
@@ -178,7 +173,7 @@ export function ensureRunWorkspace(input, { workRoot = null, quiet = true } = {}
   // there is nothing to replace - while the directory also holds slice responses, entity
   // registries, and run reports that took real time and money to produce. Deleting those
   // to rewrite two files that did not change is pure loss.
-  for (const name of ["STATIC_ANALYSIS.json", "SOURCE_INDEX.jsonl"]) {
+  for (const name of ["STATIC_ANALYSIS.json", "SOURCE_INDEX.jsonl", "STATIC_VALIDATION.json"]) {
     const from = path.join(staging, name);
     if (fs.existsSync(from)) fs.renameSync(from, path.join(destination, name));
   }

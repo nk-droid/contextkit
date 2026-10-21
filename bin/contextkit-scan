@@ -72,8 +72,10 @@ fs.mkdirSync(outDir, { recursive: true });
 
 const staticPath = path.join(outDir, "STATIC_ANALYSIS.json");
 const indexPath = path.join(outDir, "SOURCE_INDEX.jsonl");
+const validationPath = path.join(outDir, "STATIC_VALIDATION.json");
 fs.writeFileSync(staticPath, JSON.stringify(document, null, 2));
 fs.writeFileSync(indexPath, sourceIndex.jsonl);
+fs.writeFileSync(validationPath, JSON.stringify(validation, null, 2) + "\n");
 
 if (args.json) {
   process.stdout.write(JSON.stringify(document, null, 2) + "\n");
@@ -85,5 +87,8 @@ if (args.json) {
 
 if (!validation.valid) {
   process.stderr.write(`\nstatic analysis failed validation with ${validation.errors.length} error(s)\n`);
+  for (const error of validation.errors.slice(0, 10)) process.stderr.write(`  ${error}\n`);
+  if (validation.errors.length > 10) process.stderr.write(`  ... ${validation.errors.length - 10} more errors\n`);
+  process.stderr.write(`Full validation report: ${validationPath}\n`);
   process.exit(1);
 }
