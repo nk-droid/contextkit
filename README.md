@@ -130,12 +130,15 @@ Without `--all`, ContextKit generates the human overview by default. Select anot
 
 ## Agent Skills
 
-The same documents and graph are available as agent skills, so Claude Code, Codex, and other agents that support skills can produce them inside a session, without the CLI.
+The same documents, graph, and component network are available as agent skills, so Claude Code, Codex, and other agents that support skills can produce them inside a session.
 
 | Skill | Produces |
 |---|---|
 | `repo-context` | Any of the audience documents above, or a full pack with `INDEX.md` |
 | `repo-graph` | `REPO_GRAPH.json`, checked with the bundled validator before it is written |
+| `repo-network` | `NETWORK_FACTS.json` for `/network`, through this checkout's network pipeline: static, a headless provider, or the agent doing the semantic slices itself |
+
+`repo-context` and `repo-graph` are self-contained. `repo-network` runs this checkout's commands, so it needs `npm ci --ignore-scripts` here; it finds the checkout through its install link or `CONTEXTKIT_HOME`.
 
 The skills live in `.agents/skills/`, which Codex and most other agents read; `.claude/skills/` links to them for Claude Code. They work as-is inside this checkout. To use them on other repositories, link them into your user-level skill directories:
 
@@ -233,6 +236,24 @@ Private repositories should be supplied as local checkouts. Remote acquisition
 accepts public HTTP(S) clone URLs and `file://` Git mirrors, without embedded
 credentials; submodules are not recursively cloned and repository scripts are
 never executed.
+
+The agent running the `repo-network` skill can do the semantic slices itself instead
+of ContextKit launching a provider. It prepares each slice, calls the same tools as
+commands, and submits a result that goes through the same validation:
+
+```bash
+bin/contextkit-analyze /path/to/run-directory --slice foundation --provider agent --prepare
+bin/contextkit-mcp /path/to/run-directory call search_facts '{"query":"route"}' \
+  --provider agent --slice foundation
+bin/contextkit-analyze /path/to/run-directory --slice foundation --provider agent --result result.json
+# Repeat for behavior-data, then export the validated slices:
+bin/contextkit network /path/to/run-directory --provider agent --output /path/to/NETWORK_FACTS.json
+```
+
+Agent mode defaults to `cached-source`, which is what lets the agent resolve new
+evidence. ContextKit cannot confine an agent it did not launch: the agent may read the
+repository directly, and only its `contextkit-mcp` calls are logged. Validation still
+rejects evidence that is not from the run and changes to scanner-measured values.
 
 Both modes produce the same validated network contract. The command:
 

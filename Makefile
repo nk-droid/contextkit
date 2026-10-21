@@ -55,7 +55,7 @@ test:
 	node --test tests/*.test.mjs
 
 # Skills meant for use on any repository. Skills for working on ContextKit itself stay out.
-SKILLS := repo-context repo-graph
+SKILLS := repo-context repo-graph repo-network
 SKILLS_DIRS ?= $(HOME)/.claude/skills $(HOME)/.agents/skills
 
 # Claude Code reads the first directory; Codex and most other agents read the second.

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Run a ContextKit command from the checkout this skill belongs to.
+#
+#   contextkit network <repo|run-dir> [options]     bin/contextkit-network
+#   contextkit analyze <run-dir> [options]          bin/contextkit-analyze
+#   contextkit mcp <run-dir> <command> [args]       bin/contextkit-mcp
+#   contextkit export-network <run-dir> [options]   bin/contextkit-export-network
+#   contextkit scan <repo> [options]                bin/contextkit-scan
+#
+# The checkout is $CONTEXTKIT_HOME if set, else the one this skill is installed from
+# (symlinks resolved), else the one whose bin/contextkit is on PATH.
+set -euo pipefail
+
+is_checkout() { [[ -n "$1" && -f "$1/bin/contextkit-network" ]]; }
+
+root="${CONTEXTKIT_HOME:-}"
+if ! is_checkout "$root"; then
+  root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../../.." 2>/dev/null && pwd || true)"
+fi
+if ! is_checkout "$root" && command -v contextkit >/dev/null 2>&1; then
+  root="$(cd -P "$(dirname "$(command -v contextkit)")/.." && pwd)"
+fi
+if ! is_checkout "$root"; then
+  echo "contextkit: no ContextKit checkout found; set CONTEXTKIT_HOME to one" >&2
+  exit 2
+fi
+if [[ ! -d "$root/node_modules" ]]; then
+  echo "contextkit: dependencies are not installed; run: cd \"$root\" && npm ci --ignore-scripts" >&2
+  exit 2
+fi
+
+sub="${1:-}"
+if [[ $# -gt 0 ]]; then shift; fi
+case "$sub" in
+  network|analyze|mcp|export-network|scan) exec node "$root/bin/contextkit-$sub" "$@" ;;
+  *)
+    echo "usage: contextkit <network|analyze|mcp|export-network|scan> [args...]" >&2
+    exit 2
+    ;;
+esac

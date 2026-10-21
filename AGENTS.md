@@ -43,7 +43,8 @@ Write like a senior engineer onboarding another engineer:
 
 ## Skills
 
-- `repo-context` writes the audience documents; `repo-graph` writes `REPO_GRAPH.json`. Both are meant for use on other repositories, so `make install-skills` links them into user-level skill directories.
+- `repo-context` writes the audience documents, `repo-graph` writes `REPO_GRAPH.json`, and `repo-network` drives the network pipeline for `NETWORK_FACTS.json`. All three are meant for use on other repositories, so `make install-skills` links them into user-level skill directories.
+- `repo-network` carries no copy of the pipeline: its `scripts/contextkit` runs this checkout's `bin/` commands. Its agent mode is `contextkit-analyze --provider agent` (`--prepare`, then `--result`) with tool calls through `contextkit-mcp ... --provider agent --slice <id>`; the agent's prompt addendum is `prompts/analysis/agent-mode.md`, and the provider is `src/analysis/providers/agent.mjs`.
 - Edit skills under `.agents/skills/<name>/`. The `.claude/skills/` entries are symlinks.
 - Changing `repo-context/references/` or `repo-graph/references/graph-rules.md` also changes what `contextkit generate` sends to agents.
 - `repo-graph` bundles copies of `scripts/validate-graph.mjs` and `schemas/repo-graph.schema.json` so it works outside this checkout. After changing either original, run `make sync-skills`; `make test` fails while they differ.
